@@ -72,8 +72,11 @@ user_install() {
     mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.config/spacesync-framelink"
     install -Dm755 "$PY" "$HOME/.local/bin/spacesync-framelink"
     sed -e "s|^EnvironmentFile=.*|EnvironmentFile=-$HOME/.config/spacesync-framelink/env|" \
-        -e "s|^ExecStart=.*|ExecStart=$HOME/.local/bin/spacesync-framelink --host \${SPACESYNC_HOST} --port \${SPACESYNC_PORT} --hz \${SPACESYNC_HZ} --backends \${SPACESYNC_BACKENDS}|" \
+        -e "s|^ExecStart=.*|ExecStart=$HOME/.local/bin/spacesync-framelink --host \${SPACESYNC_HOST} --port \${SPACESYNC_PORT} --hz \${SPACESYNC_HZ} --idle-hz \${SPACESYNC_IDLE_HZ} --backends \${SPACESYNC_BACKENDS}|" \
         -e "/^User=/d" \
+        -e "/^ProtectSystem=/d" \
+        -e "/^ProtectHome=/d" \
+        -e "/^NoNewPrivileges=/d" \
         -e "/^WantedBy=/c\\WantedBy=default.target" \
         "$SVC" > "$HOME/.config/systemd/user/spacesync-framelink.service"
 
