@@ -137,6 +137,9 @@ void UserInterface::CollectDevices(VRState& state) const
 		vr::VRSystem()->GetStringTrackedDeviceProperty(id, vr::Prop_ModelNumber_String, buffer, vr::k_unMaxPropertyStringSize, &err);
 		device.model = std::string(buffer);
 
+		vr::VRSystem()->GetStringTrackedDeviceProperty(id, vr::Prop_ManufacturerName_String, buffer, vr::k_unMaxPropertyStringSize, &err);
+		device.manufacturer = err == vr::TrackedProp_Success ? std::string(buffer) : std::string();
+
 		vr::VRSystem()->GetStringTrackedDeviceProperty(id, vr::Prop_SerialNumber_String, buffer, vr::k_unMaxPropertyStringSize, &err);
 		device.serial = std::string(buffer);
 
@@ -534,11 +537,18 @@ void UserInterface::RenderCalibration(const Status& status)
 	dl->AddRectFilled(ImVec2(c.x - px(75.0f), y), ImVec2(c.x + px(75.0f), y + 1.0f), Col(P.border));
 	y += 1.0f + px(16.0f);
 
-	DrawTextCentered(dl, F.regular, 12.0f, ImVec2(c.x, y + lineH * 0.5f), P.textMuted, "HMD");
+	// Human-readable HMD name (manufacturer + model), with the serial +
+	// tracking system as muted sub-lines. Falls back cleanly when any field
+	// is missing.
+	std::string hmdName = status.hmd ? status.hmd->DisplayName() : "not detected";
+	DrawTextCentered(dl, F.semibold, 13.0f, ImVec2(c.x, y + lineH * 0.5f),
+		status.hmd ? P.textStrong : P.textMuted, hmdName.c_str());
 	y += lineH;
-	DrawTextCentered(dl, F.mono, 12.0f, ImVec2(c.x, y + lineH * 0.5f), P.text, status.hmd ? status.hmd->serial.c_str() : "not detected");
+	DrawTextCentered(dl, F.mono, 11.0f, ImVec2(c.x, y + lineH * 0.5f), P.textDim,
+		status.hmd ? status.hmd->serial.c_str() : "");
 	y += lineH;
-	DrawTextCentered(dl, F.regular, 12.0f, ImVec2(c.x, y + lineH * 0.5f), P.textMuted, status.hmd ? status.hmd->trackingSystem.c_str() : "");
+	DrawTextCentered(dl, F.regular, 11.5f, ImVec2(c.x, y + lineH * 0.5f), P.textMuted,
+		status.hmd ? status.hmd->trackingSystem.c_str() : "");
 	y += lineH + px(12.0f);
 
 	DrawTextCentered(dl, F.regular, 12.0f, ImVec2(c.x, y + lineH * 0.5f), status.color, status.headline.c_str());
@@ -585,7 +595,7 @@ void UserInterface::RenderEdit(const Status& status)
 	{
 		std::vector<Segment> line1 = {
 			{ F.regular, 13.0f, P.textMuted, "HMD: " },
-			{ F.mono, 12.5f, P.text, status.hmd ? status.hmd->serial : std::string("not detected") },
+			{ F.semibold, 13.0f, P.textStrong, status.hmd ? status.hmd->DisplayName() : std::string("not detected") },
 			{ F.regular, 13.0f, P.textMuted, status.hmd ? " (" + status.hmd->trackingSystem + ")" : std::string() },
 		};
 		InlineText(line1);
@@ -1085,82 +1095,77 @@ void UserInterface::RenderFrameLink(const Status& status)
 		"which the calibration pipeline can substitute in place of OpenVR's predicted pose.");
 	VSpace(18.0f);
 
-	// -------- Playspace merge: which HMDs are we lining up? ------------
+	// -------- Playspace merge: which two tracking spaces are we lining up? ---
 	SectionHeader("Playspace merge", maxW);
 	VSpace(6.0f);
 	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
-		"Calibration is what makes these two tracking spaces line up. The local HMD defines the "
-		"lighthouse/stage reference; the Frame delivers its own tracked pose. Both must be present "
-		"for SpaceSync to solve the transform between them.");
-	VSpace(8.0f);
+		"Calibration aligns two tracking spaces that describe the same physical room. The PC "
+		"sees it through SteamVR + lighthouses; the Frame sees it through its own on-board "
+		"cameras (SLAM). SpaceSync solves the transform that overlays the two.");
+	VSpace(10.0f);
 	{
 		ImDrawList* dl = ImGui::GetWindowDrawList();
-		ImVec2 wp = ImGui::GetWindowPos();
 
-		const float cardW = (px(maxW) - px(32.0f)) * 0.5f;
-		const float cardH = px(96.0f);
+		const float cardW = (px(maxW) - px(16.0f)) * 0.5f;
+		const float cardH = px(98.0f);
 
-		auto hmdCard = [&](const char* role, const char* model, const char* serial, bool connected) {
+		// Text-only card: role chip at top, big label, HMD name + id below.
+		// A thin accent ribbon on the leading edge + a corner status dot are
+		// the only non-text affordances, so the two sides are distinguishable
+		// at a glance without being busy.
+		auto spaceCard = [&](const char* role, const char* label,
+		                     const std::string& name, const char* detail,
+		                     bool connected, unsigned accent, bool leftSide) {
 			ImVec2 p0 = ImGui::GetCursorScreenPos();
 			ImVec2 p1(p0.x + cardW, p0.y + cardH);
-			unsigned border = connected ? P.borderStrong : P.border;
-			dl->AddRectFilled(p0, p1, Col(P.card), px(6.0f));
-			dl->AddRect(p0, p1, Col(border), px(6.0f), 0, px(1.0f));
+			dl->AddRectFilled(p0, p1, Col(P.card), px(7.0f));
+			dl->AddRect(p0, p1, Col(connected ? accent : P.border), px(7.0f), 0, px(1.4f));
 
-			// A simple HMD silhouette drawn with primitives — one rounded body,
-			// two eyes, a strap tab. No asset needed. Tints dim when disconnected.
-			unsigned glyph = connected ? P.textStrong : P.textDim;
-			float gx = p0.x + px(18.0f) + px(20.0f);
-			float gy = p0.y + px(16.0f) + px(16.0f);
-			ImVec2 body0(gx - px(22.0f), gy - px(12.0f));
-			ImVec2 body1(gx + px(22.0f), gy + px(12.0f));
-			dl->AddRectFilled(body0, body1, Col(glyph, 0.18f), px(4.0f));
-			dl->AddRect(body0, body1, Col(glyph), px(4.0f), 0, px(1.2f));
-			dl->AddCircleFilled(ImVec2(gx - px(10.0f), gy), px(3.0f), Col(glyph));
-			dl->AddCircleFilled(ImVec2(gx + px(10.0f), gy), px(3.0f), Col(glyph));
-			dl->AddLine(ImVec2(body0.x - px(6.0f), body0.y + px(6.0f)),
-				ImVec2(body0.x, body0.y + px(6.0f)), Col(glyph), px(1.5f));
-			dl->AddLine(ImVec2(body1.x, body0.y + px(6.0f)),
-				ImVec2(body1.x + px(6.0f), body0.y + px(6.0f)), Col(glyph), px(1.5f));
+			// Accent ribbon on the leading edge so left vs right is obvious.
+			unsigned ribbon = connected ? accent : P.border;
+			if (leftSide)
+				dl->AddRectFilled(ImVec2(p0.x, p0.y + px(10.0f)),
+					ImVec2(p0.x + px(3.0f), p1.y - px(10.0f)), Col(ribbon), px(1.5f));
+			else
+				dl->AddRectFilled(ImVec2(p1.x - px(3.0f), p0.y + px(10.0f)),
+					ImVec2(p1.x, p1.y - px(10.0f)), Col(ribbon), px(1.5f));
 
-			// Text block to the right of the glyph.
-			float tx = gx + px(36.0f);
+			dl->AddCircleFilled(ImVec2(p1.x - px(14.0f), p0.y + px(14.0f)), px(4.0f),
+				Col(connected ? P.green : P.danger));
+
+			float tx = p0.x + px(20.0f);
 			DrawText(dl, F.regular, 10.5f, ImVec2(tx, p0.y + px(14.0f)),
 				connected ? P.textMuted : P.textDim, role);
-			DrawText(dl, F.semibold, 14.0f, ImVec2(tx, p0.y + px(28.0f)),
-				connected ? P.textBright : P.textMuted, model && *model ? model : "(disconnected)");
-			DrawText(dl, F.mono, 11.0f, ImVec2(tx, p0.y + px(52.0f)),
-				connected ? P.textDim : P.textDim, serial && *serial ? serial : "-");
-
-			// Tiny status dot in the corner.
-			unsigned dotCol = connected ? P.green : P.danger;
-			dl->AddCircleFilled(ImVec2(p1.x - px(14.0f), p0.y + px(14.0f)), px(4.0f), Col(dotCol));
+			DrawText(dl, F.semibold, 15.0f, ImVec2(tx, p0.y + px(30.0f)),
+				connected ? P.textBright : P.textMuted, label);
+			DrawText(dl, F.regular, 12.0f, ImVec2(tx, p0.y + px(56.0f)),
+				connected ? P.text : P.textDim,
+				name.empty() ? "(disconnected)" : name.c_str());
+			DrawText(dl, F.mono, 10.5f, ImVec2(tx, p0.y + px(74.0f)),
+				P.textDim, detail && *detail ? detail : "-");
 
 			ImGui::Dummy(ImVec2(cardW, cardH));
 		};
 
-		// Local HMD (whatever SteamVR on this PC is currently rendering for).
-		const char* localModel = status.hmd ? status.hmd->model.c_str() : "";
-		const char* localSerial = status.hmd ? status.hmd->serial.c_str() : "";
-		hmdCard("Local HMD", localModel, localSerial, status.hmd != nullptr);
+		// LEFT: PC side (what SteamVR renders for).
+		std::string localName = status.hmd ? status.hmd->DisplayName() : std::string();
+		spaceCard("PC side",
+			"SteamVR tracking space",
+			localName,
+			status.hmd ? status.hmd->serial.c_str() : "not detected",
+			status.hmd != nullptr, P.link, true);
 
 		ImGui::SameLine(0.0f, px(16.0f));
 
-		// Frame HMD identified by the Hello's productId.
-		char remoteModel[48];
-		if (s.hasPeer && s.product[0])
-			std::snprintf(remoteModel, sizeof remoteModel, "%s", s.product);
-		else
-			std::snprintf(remoteModel, sizeof remoteModel, "%s", "(no Frame)");
-		hmdCard("Frame HMD (via FrameLink)", remoteModel, s.hasPeer ? s.peer : "-", s.hasPeer);
-
-		VSpace(8.0f);
-		TextWrapped(F.regular, 12.0f, P.textDim, maxW,
-			"Calibration aligns the local HMD's tracking space to the Frame's "
-			"SLAM space using the head-tracker samples. Both must be present for the "
-			"substitution to actually feed poses into the solve.");
+		// RIGHT: Headset side (Frame's own SLAM, delivered over FrameLink).
+		std::string remoteName = s.hasPeer ? std::string(s.product) : std::string();
+		spaceCard("Headset side",
+			"Frame SLAM space",
+			remoteName,
+			s.hasPeer ? s.peer : "(no Frame)",
+			s.hasPeer, P.accent, false);
 	}
-	VSpace(18.0f);
+	VSpace(16.0f);
 
 	// ---- Connection card -----------------------------------------------
 	SectionHeader("Connection", maxW);
