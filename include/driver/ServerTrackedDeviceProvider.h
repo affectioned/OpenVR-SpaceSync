@@ -57,6 +57,7 @@ public:
 	void SetOneEuro(const protocol::SetOneEuro &cmd);
 	void SetUniverseLock(const protocol::SetUniverseLock &cmd);
 	void GetStatus(protocol::DriverStatus &status);
+	void GetFrameLinkSample(uint32_t deviceId, protocol::FrameLinkSample &out);
 	bool HandleDevicePoseUpdated(uint32_t openVRID, vr::DriverPose_t &pose);
 
 private:
