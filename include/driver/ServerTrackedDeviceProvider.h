@@ -11,6 +11,7 @@
 #include "StayAligned.h"
 #include "UniverseProbe.h"
 #include "UniverseLock.h"
+#include "FrameLink.h"
 
 #include <openvr_driver.h>
 
@@ -119,6 +120,10 @@ private:
 
 	universe::Probe universeProbe;
 	universe::Lock universeLock;
+
+	// Scaffold: receives data from a Steam Frame service (issue #18). The driver
+	// works without it — if no packets ever arrive, nothing changes.
+	framelink::Listener frameLink;
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };

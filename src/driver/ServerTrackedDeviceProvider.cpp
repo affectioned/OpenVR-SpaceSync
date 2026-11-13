@@ -51,6 +51,7 @@ vr::EVRInitError ServerTrackedDeviceProvider::Init(vr::IVRDriverContext* pDriver
 
 	InjectHooks(pDriverContext);
 	server.Run();
+	frameLink.Start();
 
 	return vr::VRInitError_None;
 }
@@ -61,6 +62,7 @@ void ServerTrackedDeviceProvider::Cleanup()
 	CloseLogFile();
 
 	TRACE("ServerTrackedDeviceProvider::Cleanup()");
+	frameLink.Stop();
 	server.Stop();
 	DisableHooks();
 	VR_CLEANUP_SERVER_DRIVER_CONTEXT();

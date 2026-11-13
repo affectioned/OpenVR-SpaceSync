@@ -97,6 +97,7 @@ add_library(driver_spacesync SHARED
     "src/driver/Hooking.cpp"
     "src/driver/Logging.cpp"
     "src/driver/KalmanFilter.cpp"
+    "src/driver/FrameLink.cpp"
 )
 
 target_compile_features(driver_spacesync PRIVATE cxx_std_20)
