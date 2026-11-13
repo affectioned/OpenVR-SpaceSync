@@ -1090,9 +1090,11 @@ void UserInterface::RenderFrameLink(const Status& status)
 	const auto& s = CalCtx.frameLinkStatus;
 
 	TextWrapped(F.regular, 13.0f, P.textMuted, maxW,
-		"Live status of the UDP listener that receives data from a Steam Frame service "
-		"(issue #18). The Frame-side sender ships raw HMD poses + confidence to the driver, "
-		"which the calibration pipeline can substitute in place of OpenVR's predicted pose.");
+		"Optional — not needed for SpaceSync to work. Recommended for HMD Driven without a head "
+		"tracker on Steam Frame, where the Frame-side sender can hand the driver raw HMD poses + "
+		"confidence that are tighter than what OpenVR delivers through the stream. If you don't "
+		"run the Frame service everything below stays empty and SpaceSync behaves exactly as "
+		"before the Steam Frame integration. See issue #18.");
 	VSpace(18.0f);
 
 	// -------- Playspace merge: which two tracking spaces are we lining up? ---
