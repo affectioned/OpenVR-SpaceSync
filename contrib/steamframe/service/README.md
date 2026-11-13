@@ -1,5 +1,10 @@
 # SpaceSync FrameLink service (Steam Frame side)
 
+> Working with the Frame over SSH for the first time? See [`SSH.md`](SSH.md)
+> for the one-time setup (enable sshd, user is `steamos` not `deck`, install
+> a key, read-only root quirks, how to tail the right journal).
+
+
 Runs on the Frame (or any ARM64/x86_64 Linux box with Python 3.11+), opens
 a backend that reads the HMD tracking pose, and ships it to the PC's
 SpaceSync driver over UDP 29485 using the shared FrameLink wire format.
