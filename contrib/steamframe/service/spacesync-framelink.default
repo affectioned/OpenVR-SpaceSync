@@ -12,4 +12,4 @@ SPACESYNC_HZ=30
 SPACESYNC_IDLE_HZ=5
 # Comma-separated backend preference. Try the real tracking backend first,
 # fall back to stub (handshake only).
-SPACESYNC_BACKENDS=openxr,stub
+SPACESYNC_BACKENDS=openvr,openxr,stub
