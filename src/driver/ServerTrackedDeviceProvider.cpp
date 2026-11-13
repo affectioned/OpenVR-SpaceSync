@@ -525,6 +525,35 @@ void ServerTrackedDeviceProvider::GetFrameLinkSample(uint32_t deviceId, protocol
 	out.ageMs = (nowSec - snap.pcSeconds) * 1000.0;
 }
 
+void ServerTrackedDeviceProvider::GetFrameLinkStatus(protocol::FrameLinkStatus& out)
+{
+	framelink::Listener::Stats s = frameLink.GetStats();
+	LARGE_INTEGER now, freq;
+	QueryPerformanceCounter(&now);
+	QueryPerformanceFrequency(&freq);
+	double nowSec = now.QuadPart / (double)freq.QuadPart;
+
+	out.listening = s.listening;
+	out.port = s.port;
+	out.hasPeer = s.hasPeer;
+	auto copyStr = [](char* dst, size_t cap, const std::string& src) {
+		// windows.h defines min/max macros; wrap in parens to force function call.
+		size_t n = (std::min)(cap - 1, src.size());
+		std::memcpy(dst, src.data(), n);
+		dst[n] = 0;
+	};
+	copyStr(out.peer, sizeof out.peer, s.peer);
+	copyStr(out.product, sizeof out.product, s.product);
+	out.frameClockHz = s.frameClockHz;
+	out.packets = s.packets;
+	out.droppedBadMagic = s.droppedBadMagic;
+	out.droppedBadVersion = s.droppedBadVersion;
+	out.lastPacketAgeMs = s.lastPacketSec >= 0.0 ? (nowSec - s.lastPacketSec) * 1000.0 : -1.0;
+	out.lastHelloAgeMs = s.lastHelloSec >= 0.0 ? (nowSec - s.lastHelloSec) * 1000.0 : -1.0;
+	out.lastPoseAgeMs = s.lastPoseSec >= 0.0 ? (nowSec - s.lastPoseSec) * 1000.0 : -1.0;
+	out.lastPoseConfidence = s.lastPoseConfidence;
+}
+
 void ServerTrackedDeviceProvider::ApplyDrift(vr::DriverPose_t& pose) const
 {
 	double slamScale = SlamToCorrectedScale();

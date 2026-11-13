@@ -58,6 +58,7 @@ public:
 	void SetUniverseLock(const protocol::SetUniverseLock &cmd);
 	void GetStatus(protocol::DriverStatus &status);
 	void GetFrameLinkSample(uint32_t deviceId, protocol::FrameLinkSample &out);
+	void GetFrameLinkStatus(protocol::FrameLinkStatus &out);
 	bool HandleDevicePoseUpdated(uint32_t openVRID, vr::DriverPose_t &pose);
 
 private:

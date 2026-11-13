@@ -1375,6 +1375,15 @@ void ScanAndApplyProfile(CalibrationContext &ctx)
 
 	try
 	{
+		protocol::Request flReq(protocol::RequestGetFrameLinkStatus);
+		protocol::Response flResp = Driver.SendBlocking(flReq);
+		if (flResp.type == protocol::ResponseFrameLinkStatus)
+			ctx.frameLinkStatus = flResp.frameLinkStatus;
+	}
+	catch (...) { /* FrameLink stats are optional; don't let them break the tick. */ }
+
+	try
+	{
 		protocol::Request statusReq(protocol::RequestGetStatus);
 		protocol::Response statusResp = Driver.SendBlocking(statusReq);
 		if (statusResp.type == protocol::ResponseStatus)

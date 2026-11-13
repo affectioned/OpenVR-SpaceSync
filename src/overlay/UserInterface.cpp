@@ -313,6 +313,9 @@ UserInterface::WindowAction UserInterface::Render(bool runningInOverlay)
 			case Tab::Lighthouse:
 				RenderLighthouse();
 				break;
+			case Tab::FrameLink:
+				RenderFrameLink();
+				break;
 			case Tab::Settings:
 				RenderSettings();
 				break;
@@ -455,6 +458,8 @@ void UserInterface::RenderTabs()
 	if (TabItem("Smoothing", tab_ == Tab::Smoothing)) tab_ = Tab::Smoothing;
 	ImGui::SameLine();
 	if (TabItem("Basestations", tab_ == Tab::Lighthouse)) tab_ = Tab::Lighthouse;
+	ImGui::SameLine();
+	if (TabItem("Frame Link", tab_ == Tab::FrameLink)) tab_ = Tab::FrameLink;
 	ImGui::SameLine();
 	if (TabItem("Settings", tab_ == Tab::Settings)) tab_ = Tab::Settings;
 
@@ -1066,6 +1071,121 @@ void UserInterface::RenderSmoothing()
 	{
 		SaveProfile(CalCtx);
 		smoothingDirty_ = false;
+	}
+}
+
+void UserInterface::RenderFrameLink()
+{
+	const float maxW = std::min(820.0f, PageDesignWidth());
+	const auto& s = CalCtx.frameLinkStatus;
+
+	TextWrapped(F.regular, 13.0f, P.textMuted, maxW,
+		"Live status of the UDP listener that receives data from a Steam Frame service "
+		"(issue #18). The Frame-side sender ships raw HMD poses + confidence to the driver, "
+		"which the calibration pipeline can substitute in place of OpenVR's predicted pose.");
+	VSpace(18.0f);
+
+	// ---- Connection card -----------------------------------------------
+	SectionHeader("Connection", maxW);
+	VSpace(8.0f);
+
+	auto kv = [&](const char* label, const std::string& value, unsigned valueColor) {
+		Text(F.regular, 13.0f, P.textMuted, label);
+		ImGui::SameLine();
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(140.0f) - ImGui::CalcTextSize(label).x - px(8.0f));
+		Text(F.mono, 12.5f, valueColor, value.c_str());
+	};
+
+	const bool listening = s.listening;
+	const bool haveRecent = s.lastPacketAgeMs >= 0.0 && s.lastPacketAgeMs < 3000.0;
+
+	char line[160];
+	std::snprintf(line, sizeof line, "UDP :%u  %s",
+		(unsigned)s.port, listening ? "listening" : "NOT bound");
+	kv("Listener", line, listening ? P.green : P.danger);
+
+	kv("Peer", s.hasPeer ? std::string(s.peer) : std::string("(none yet)"),
+		s.hasPeer ? P.textStrong : P.textDim);
+	kv("Product", s.hasPeer ? std::string(s.product) : std::string("-"),
+		s.hasPeer ? P.textStrong : P.textDim);
+
+	if (s.frameClockHz > 0) {
+		double mhz = (double)s.frameClockHz / 1e6;
+		std::snprintf(line, sizeof line, "%.3f MHz", mhz);
+		kv("Frame clock", line, P.textStrong);
+	} else {
+		kv("Frame clock", "-", P.textDim);
+	}
+
+	VSpace(14.0f);
+
+	// ---- Activity ------------------------------------------------------
+	SectionHeader("Activity", maxW);
+	VSpace(8.0f);
+
+	auto ageText = [&](double ageMs, char* buf, size_t cap) {
+		if (ageMs < 0.0) { std::snprintf(buf, cap, "never"); return; }
+		if (ageMs < 2000.0) { std::snprintf(buf, cap, "%.0f ms ago", ageMs); return; }
+		if (ageMs < 120000.0) { std::snprintf(buf, cap, "%.1f s ago", ageMs / 1000.0); return; }
+		std::snprintf(buf, cap, "%.1f min ago", ageMs / 60000.0);
+	};
+	auto ageColor = [&](double ageMs, double freshMs) {
+		if (ageMs < 0.0) return P.textDim;
+		if (ageMs < freshMs) return P.green;
+		if (ageMs < freshMs * 4.0) return P.yellow;
+		return P.danger;
+	};
+
+	char ageBuf[64];
+
+	ageText(s.lastPacketAgeMs, ageBuf, sizeof ageBuf);
+	kv("Last packet", ageBuf, ageColor(s.lastPacketAgeMs, 500.0));
+
+	ageText(s.lastHelloAgeMs, ageBuf, sizeof ageBuf);
+	kv("Last Hello", ageBuf, ageColor(s.lastHelloAgeMs, 2000.0));
+
+	ageText(s.lastPoseAgeMs, ageBuf, sizeof ageBuf);
+	kv("Last pose", ageBuf, ageColor(s.lastPoseAgeMs, 500.0));
+
+	std::snprintf(line, sizeof line, "%.2f", s.lastPoseConfidence);
+	kv("Pose confidence", line, s.lastPoseConfidence >= 0.5 ? P.green :
+	                            s.lastPoseConfidence > 0.0 ? P.yellow : P.textDim);
+
+	VSpace(14.0f);
+
+	// ---- Counters ------------------------------------------------------
+	SectionHeader("Counters", maxW);
+	VSpace(8.0f);
+
+	std::snprintf(line, sizeof line, "%llu", (unsigned long long)s.packets);
+	kv("Packets accepted", line, s.packets > 0 ? P.textStrong : P.textDim);
+
+	std::snprintf(line, sizeof line, "%llu", (unsigned long long)s.droppedBadMagic);
+	kv("Bad-magic drops", line, s.droppedBadMagic == 0 ? P.textStrong : P.yellow);
+
+	std::snprintf(line, sizeof line, "%llu", (unsigned long long)s.droppedBadVersion);
+	kv("Bad-version drops", line, s.droppedBadVersion == 0 ? P.textStrong : P.yellow);
+
+	VSpace(14.0f);
+
+	// ---- Behaviour toggles --------------------------------------------
+	SectionHeader("Calibration integration", maxW);
+	VSpace(8.0f);
+	if (CheckboxRow("Use Frame data in calibration",
+		"When a Frame service is publishing fresh high-confidence poses, substitute them for the OpenVR-polled HMD pose during the next calibration run. Off makes SpaceSync behave exactly as it did before the Steam Frame integration.",
+		&CalCtx.useFrameLink, maxW))
+		SaveProfile(CalCtx);
+	VSpace(10.0f);
+	if (SliderRow("Min confidence",
+		"Samples below this threshold are rejected (with a visible error in the calibration log) instead of silently used. Raise this if your Frame reports low-confidence samples during normal use.",
+		&CalCtx.frameLinkMinConfidence, 0.0, 1.0, "%.2f", maxW, 110.0f, 64.0f))
+		SaveProfile(CalCtx);
+
+	VSpace(14.0f);
+	if (!haveRecent)
+	{
+		Text(F.regular, 12.5f, P.textDim, "No Frame service has spoken to this driver yet. "
+			"Install contrib/steamframe/service on the Frame to start the pipe.");
 	}
 }
 

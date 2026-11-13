@@ -49,6 +49,11 @@ void IPCServer::HandleRequest(const protocol::Request &request, protocol::Respon
 		response.type = protocol::ResponseFrameLinkSample;
 		break;
 
+	case protocol::RequestGetFrameLinkStatus:
+		driver->GetFrameLinkStatus(response.frameLinkStatus);
+		response.type = protocol::ResponseFrameLinkStatus;
+		break;
+
 	default:
 		LOG("Invalid IPC request: %d", request.type);
 		break;
