@@ -121,6 +121,12 @@ class Backend(ABC):
 class OpenXRBackend(Backend):
     name = "openxr"
 
+    # Runtime-specific headless extensions, in preference order. Monado and
+    # Valve's SteamVR/OpenXR both ship XR_MND_headless — it's the Monado
+    # extension that lets a session skip the graphics binding, which is
+    # exactly what we need to pull head poses from a service.
+    HEADLESS_EXTENSIONS = ("XR_MND_headless",)
+
     def init(self) -> bool:
         try:
             import xr  # pyopenxr
@@ -130,7 +136,14 @@ class OpenXRBackend(Backend):
         self.xr = xr
 
         try:
-            # Headless-ish usage: we only need tracking, no rendering.
+            avail = {e.extension_name.decode()
+                     for e in xr.enumerate_instance_extension_properties()}
+            headless = [e for e in self.HEADLESS_EXTENSIONS if e in avail]
+            if not headless:
+                log.warning("openxr runtime has no headless extension; "
+                            "skipping (available: %d extensions)", len(avail))
+                return False
+
             app_info = xr.ApplicationInfo(
                 application_name="spacesync-framelink",
                 application_version=1,
@@ -138,77 +151,103 @@ class OpenXRBackend(Backend):
                 engine_version=1,
                 api_version=xr.Version(1, 0, 0),
             )
-            create_info = xr.InstanceCreateInfo(application_info=app_info)
-            self.instance = xr.create_instance(create_info)
+            self.instance = xr.create_instance(xr.InstanceCreateInfo(
+                application_info=app_info,
+                enabled_extension_names=headless,
+            ))
+
+            props = xr.get_instance_properties(self.instance)
+            log.info("openxr runtime: %s %s, headless ext: %s",
+                     props.runtime_name.decode(), props.runtime_version,
+                     ",".join(headless))
+
             self.system_id = xr.get_system(self.instance, xr.SystemGetInfo(
                 form_factor=xr.FormFactor.HEAD_MOUNTED_DISPLAY))
 
-            # Session without a graphics binding is non-standard. On SteamOS/Monado
-            # we may succeed; if not, this backend bails out and the stub takes over.
-            try:
-                session_create = xr.SessionCreateInfo(
-                    system_id=self.system_id,
-                    next=None,
-                )
-                self.session = xr.create_session(self.instance, session_create)
-            except Exception as e:
-                log.warning("openxr create_session rejected without graphics binding: %s", e)
-                return False
+            self.session = xr.create_session(
+                self.instance, xr.SessionCreateInfo(system_id=self.system_id))
 
-            self.world_space = xr.create_reference_space(
-                self.session,
-                xr.ReferenceSpaceCreateInfo(
+            self.stage_space = xr.create_reference_space(
+                self.session, xr.ReferenceSpaceCreateInfo(
                     reference_space_type=xr.ReferenceSpaceType.STAGE,
                     pose_in_reference_space=xr.Posef(),
-                ),
-            )
+                ))
             self.view_space = xr.create_reference_space(
-                self.session,
-                xr.ReferenceSpaceCreateInfo(
+                self.session, xr.ReferenceSpaceCreateInfo(
                     reference_space_type=xr.ReferenceSpaceType.VIEW,
                     pose_in_reference_space=xr.Posef(),
-                ),
+                ))
+
+            # Begin session so locate_space is live. PRIMARY_STEREO matches an
+            # HMD; the runtime doesn't actually render anything because we
+            # declared no graphics binding.
+            xr.begin_session(self.session, xr.SessionBeginInfo(
+                primary_view_configuration_type=xr.ViewConfigurationType.PRIMARY_STEREO,
+            ))
+
+            # Position+Orientation valid + tracked mask (bits 0..3).
+            self.required_flags = (
+                xr.SPACE_LOCATION_POSITION_VALID_BIT
+                | xr.SPACE_LOCATION_ORIENTATION_VALID_BIT
+                | xr.SPACE_LOCATION_POSITION_TRACKED_BIT
+                | xr.SPACE_LOCATION_ORIENTATION_TRACKED_BIT
             )
-            log.info("openxr backend initialized")
+            log.info("openxr backend initialized (headless)")
             return True
         except Exception as e:
             log.warning("openxr init failed: %s", e)
             return False
 
-    def _xr_now(self) -> int:
-        # Convert monotonic ns to an XrTime (int64 ns since some epoch).
-        return now_ticks_ns()
+    def _xr_time(self):
+        return self.xr.Time(now_ticks_ns())
 
     def poll_hmd(self):
         xr = self.xr
         try:
-            loc = xr.locate_space(self.view_space, self.world_space, self._xr_now())
+            loc = xr.locate_space(self.view_space, self.stage_space, self._xr_time())
             flags = int(loc.location_flags)
-            tracked = bool(flags & xr.SPACE_LOCATION_POSITION_TRACKED_BIT) and \
-                      bool(flags & xr.SPACE_LOCATION_ORIENTATION_TRACKED_BIT)
-            if not tracked:
-                return None
+            if (flags & self.required_flags) != self.required_flags:
+                # Position or orientation isn't tracked — treat as
+                # inertial-only so the PC-side calibrator discards it.
+                return {
+                    "pos": (0.0, 0.0, 0.0),
+                    "quat": (1.0, 0.0, 0.0, 0.0),
+                    "lin": (0.0, 0.0, 0.0),
+                    "ang": (0.0, 0.0, 0.0),
+                    "flags": FLAG_INERTIAL,
+                    "confidence": 0.2,
+                    "capture_ticks": now_ticks_ns(),
+                }
             p = loc.pose.position
             o = loc.pose.orientation
-            # OpenXR quaternion order is xyzw; our wire format is wxyz.
+            # OpenXR quaternion is xyzw in Posef.orientation; our wire format
+            # is wxyz. Linear/angular velocity aren't delivered by
+            # locate_space — reserved for a future frame-loop upgrade.
             return {
                 "pos": (float(p.x), float(p.y), float(p.z)),
                 "quat": (float(o.w), float(o.x), float(o.y), float(o.z)),
-                "lin": (0.0, 0.0, 0.0),   # not available without a frame loop
+                "lin": (0.0, 0.0, 0.0),
                 "ang": (0.0, 0.0, 0.0),
                 "flags": FLAG_POSITION | FLAG_ROTATION,
                 "confidence": 0.95,
-                "capture_ticks": self._xr_now(),
+                "capture_ticks": now_ticks_ns(),
             }
         except Exception as e:
             log.debug("locate_space failed: %s", e)
             return None
 
     def poll_gravity(self):
+        # TODO: pull gravity from the runtime if an extension exposes it.
+        # For now the PC side is happy without it — the solver falls back to
+        # the existing lighthouse gravity path.
         return None
 
     def shutdown(self) -> None:
         try:
+            # The right teardown is request_exit_session -> event loop ->
+            # end_session, but a long-lived service is almost always killed
+            # by SIGTERM; skip the dance and let the runtime clean up when
+            # the process exits.
             self.xr.destroy_session(self.session)
             self.xr.destroy_instance(self.instance)
         except Exception:
