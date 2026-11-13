@@ -1,9 +1,15 @@
 # Steam Frame integration
 
-**What this does:** lets SpaceSync's calibration use a Steam Frame's own
-SLAM pose instead of only the one OpenVR hands it. The Frame runs a small
-daemon that ships raw HMD poses to the PC over UDP; the SpaceSync driver
-accepts them and the overlay substitutes them into the calibration solve.
+**Optional — not required.** SpaceSync works without it exactly like it did
+before. The feature is **recommended** when you're on Steam Frame in
+*HMD Driven* mode without a head tracker, where the Frame-side daemon can
+hand the driver raw HMD poses + confidence that are tighter than what
+OpenVR delivers through the stream. Nothing changes for other setups.
+
+**What this does:** when installed, the Frame runs a small daemon that ships
+raw HMD poses to the PC over UDP; the SpaceSync driver accepts them and the
+overlay substitutes them into the calibration solve. If the daemon isn't
+running the driver falls back to OpenVR's own HMD pose silently.
 
 Issue: [#18](https://github.com/shinyflvre/OpenVR-SpaceSync/issues/18).
 Showcase: [`docs/images/steam-frame-showcase.png`](images/steam-frame-showcase.png).

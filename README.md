@@ -16,7 +16,9 @@ It is a fork of Nyabsi's [OpenVR SpaceOverride](https://github.com/Nyabsi/OpenVR
 
 ## Steam Frame integration (prototype, this branch only — issue #18)
 
-Experimental: a small daemon on the Steam Frame that sends raw unpredicted HMD poses + capture timestamps to the PC-side SpaceSync driver over UDP 29485. Read the write-up in [`contrib/steamframe/service/README.md`](contrib/steamframe/service/README.md).
+**Optional** — SpaceSync works without it exactly like it did before. **Recommended** if you're on Steam Frame and using *HMD Driven* mode without a head tracker, where the Frame-side daemon can hand the driver raw HMD poses + confidence that are tighter than the ones OpenVR delivers through the stream.
+
+Full write-up: [`docs/steam-frame-integration.md`](docs/steam-frame-integration.md). Frame-side daemon: [`contrib/steamframe/service/README.md`](contrib/steamframe/service/README.md).
 
 **One-shot install on the Frame** (replace `<PC-IP>` with your PC's LAN address — SpaceSync's status page shows it):
 
