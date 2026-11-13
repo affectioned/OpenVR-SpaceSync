@@ -14,9 +14,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# The Vulkan validation layer adds extra reporting that also surfaces validation    
+# The Vulkan validation layer adds extra reporting that also surfaces validation
 # issues originating from external sources (e.g. SteamVR). Defaults on.
 option(ENABLE_VULKAN_VALIDATION "Enable Vulkan validation layers" OFF)
+
+# Steam Frame link test binaries + ctest. Opt in, so default builds don't
+# pull them in.
+option(ENABLE_SPACESYNC_TESTS "Build the FrameLink integration tests" OFF)
+if (ENABLE_SPACESYNC_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 set(OpenVR_ROOT ${CMAKE_SOURCE_DIR}/3rdparty/OpenVR)
 
