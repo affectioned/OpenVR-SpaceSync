@@ -15,14 +15,15 @@ ExecStart=/usr/local/bin/spacesync-framelink --host ${SPACESYNC_HOST} --port ${S
 Restart=on-failure
 RestartSec=5
 User=deck
-# Read-only root on SteamOS: we don't need to write anywhere.
-ProtectSystem=strict
-ProtectHome=yes
-NoNewPrivileges=yes
 # Keep the service out of battery-killing CPU/scheduler classes.
 Nice=5
 CPUWeight=20
 IOWeight=20
+# Hardening directives (ProtectHome, ProtectSystem, NoNewPrivileges) are
+# intentionally omitted: they hid /home from the user install path and
+# broke the service on Steam Frame, which runs the daemon as `steamos`
+# with the binary under /home/steamos/.local/bin. A sysadmin running a
+# system install can add them back in an override drop-in if desired.
 
 [Install]
 WantedBy=multi-user.target
