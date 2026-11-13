@@ -118,6 +118,110 @@ class Backend(ABC):
 
 # ---- OpenXR backend (most likely path on Valve's SteamOS) --------------------
 
+def _mat34_to_pos_quat(m):
+    """OpenVR HmdMatrix34_t → (position tuple, wxyz quat tuple)."""
+    import math
+    px, py, pz = m[0][3], m[1][3], m[2][3]
+    tr = m[0][0] + m[1][1] + m[2][2]
+    if tr > 0:
+        s = 2.0 * math.sqrt(1.0 + tr)
+        w = 0.25 * s
+        x = (m[2][1] - m[1][2]) / s
+        y = (m[0][2] - m[2][0]) / s
+        z = (m[1][0] - m[0][1]) / s
+    elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = 2.0 * math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2])
+        w = (m[2][1] - m[1][2]) / s; x = 0.25 * s
+        y = (m[0][1] + m[1][0]) / s; z = (m[0][2] + m[2][0]) / s
+    elif m[1][1] > m[2][2]:
+        s = 2.0 * math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2])
+        w = (m[0][2] - m[2][0]) / s; y = 0.25 * s
+        x = (m[0][1] + m[1][0]) / s; z = (m[1][2] + m[2][1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1])
+        w = (m[1][0] - m[0][1]) / s; z = 0.25 * s
+        x = (m[0][2] + m[2][0]) / s; y = (m[1][2] + m[2][1]) / s
+    n = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+    return (px, py, pz), (w / n, x / n, y / n, z / n)
+
+
+# ---- OpenVR Background backend ----------------------------------------------
+#
+# This is how Babble-style tools avoid the "Next up" compositor queue: attach
+# as VRApplication_Background, which is explicitly a client that doesn't take
+# a focus slot. We also skip OpenXR entirely, which is the cheapest path on
+# a headless service.
+
+class OpenVRBackend(Backend):
+    name = "openvr"
+
+    def init(self) -> bool:
+        try:
+            import openvr
+        except ImportError:
+            log.info("pyopenvr not installed; skipping OpenVR backend")
+            return False
+        self.openvr = openvr
+
+        try:
+            self.vr = openvr.init(openvr.VRApplication_Background)
+        except Exception as e:
+            log.warning("openvr init failed: %s", e)
+            return False
+        self._pose_buf = (openvr.TrackedDevicePose_t * openvr.k_unMaxTrackedDeviceCount)()
+        log.info("openvr backend initialized (VRApplication_Background)")
+        return True
+
+    def poll_hmd(self):
+        openvr = self.openvr
+        try:
+            openvr.VRSystem().getDeviceToAbsoluteTrackingPose(
+                openvr.TrackingUniverseRawAndUncalibrated, 0.0, self._pose_buf
+            )
+            p = self._pose_buf[openvr.k_unTrackedDeviceIndex_Hmd]
+        except Exception as e:
+            log.debug("getDeviceToAbsoluteTrackingPose failed: %s", e)
+            return None
+
+        if not p.bPoseIsValid:
+            # Connected but not tracking — surface as inertial-only so the
+            # overlay drops the sample from calibration instead of trusting it.
+            return {
+                "pos": (0.0, 0.0, 0.0),
+                "quat": (1.0, 0.0, 0.0, 0.0),
+                "lin": (0.0, 0.0, 0.0),
+                "ang": (0.0, 0.0, 0.0),
+                "flags": FLAG_INERTIAL,
+                "confidence": 0.2,
+                "capture_ticks": now_ticks_ns(),
+            }
+
+        pos, quat = _mat34_to_pos_quat(p.mDeviceToAbsoluteTracking)
+        v = p.vVelocity
+        av = p.vAngularVelocity
+        # Running_OK = 200, Running_OutOfRange = 201, Fallback_RotationOnly = 300
+        conf = 0.95 if int(p.eTrackingResult) == 200 else 0.6
+        return {
+            "pos": pos,
+            "quat": quat,
+            "lin": (float(v[0]), float(v[1]), float(v[2])),
+            "ang": (float(av[0]), float(av[1]), float(av[2])),
+            "flags": FLAG_POSITION | FLAG_ROTATION,
+            "confidence": conf,
+            "capture_ticks": now_ticks_ns(),
+        }
+
+    def poll_gravity(self):
+        # TODO once we have an IMU tap or a static-calibration estimate.
+        return None
+
+    def shutdown(self) -> None:
+        try:
+            self.openvr.shutdown()
+        except Exception:
+            pass
+
+
 class OpenXRBackend(Backend):
     name = "openxr"
 
@@ -278,6 +382,7 @@ class StubBackend(Backend):
 
 
 BACKENDS = {
+    "openvr": OpenVRBackend,
     "openxr": OpenXRBackend,
     "stub":   StubBackend,
 }
@@ -448,8 +553,11 @@ def main() -> None:
                    help="pose rate once the head has been still ~1s (default 5)")
     p.add_argument("--no-efficient", action="store_true",
                    help="disable the motion-gated rate drop; stream at --hz regardless")
-    p.add_argument("--backends", default="openxr,stub",
-                   help="comma-separated backend preference list (default: openxr,stub)")
+    p.add_argument("--backends", default="openvr,openxr,stub",
+                   help="comma-separated backend preference list (default: openvr,openxr,stub). "
+                        "openvr uses VRApplication_Background and avoids SteamVR's compositor "
+                        "queue; openxr needs XR_MND_headless and currently stalls the headset "
+                        "on Valve's SteamVR/OpenXR runtime.")
     p.add_argument("--product", default="steam-frame")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
