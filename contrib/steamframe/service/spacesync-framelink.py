@@ -178,12 +178,15 @@ class OpenXRBackend(Backend):
                     pose_in_reference_space=xr.Posef(),
                 ))
 
-            # Begin session so locate_space is live. PRIMARY_STEREO matches an
-            # HMD; the runtime doesn't actually render anything because we
-            # declared no graphics binding.
-            xr.begin_session(self.session, xr.SessionBeginInfo(
-                primary_view_configuration_type=xr.ViewConfigurationType.PRIMARY_STEREO,
-            ))
+            # Deliberately NOT calling begin_session.
+            #
+            # If we call begin_session with PRIMARY_STEREO on SteamVR's runtime,
+            # the compositor queues us like a VR game — the headset shows a
+            # "Next up: spacesync-framelink" stall until the service exits.
+            # With XR_MND_headless, locate_space returns valid flags=0xf poses
+            # directly on the created session, so we skip the activation step
+            # entirely and stay out of the compositor's app list.
+            # Verified on SteamVR/OpenXR 2.18.2 on Steam Frame.
 
             # Position+Orientation valid + tracked mask (bits 0..3).
             self.required_flags = (
