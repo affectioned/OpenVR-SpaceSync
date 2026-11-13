@@ -90,19 +90,33 @@ Measured numbers will land here once we have them.
 Then `sudo systemctl restart spacesync-framelink` (or `systemctl --user
 restart ...`).
 
-## What's still unknown
+## Status
 
-The `openxr` backend assumes pyopenxr is available and that a headless
-OpenXR session can be created on the Frame without a graphics binding. This
-may or may not work on Valve's runtime — the `stub` fallback means an
-install always comes up cleanly even if OpenXR rejects us, and we iterate
-from there.
+Verified end-to-end on real Steam Frame hardware:
 
-Alternatives to try once we see what the Frame ships with:
+- **Runtime:** SteamVR/OpenXR 2.18.2, HMD codename `cv`, vendor Valve.
+- **Backend:** `openxr` with the `XR_MND_headless` extension, which lets
+  the service create an `xrSession` without a graphics binding. Monado
+  ships this extension and Valve's runtime inherits it.
+- **Install:** `pip install --user --break-system-packages pyopenxr`
+  (PEP 668 on SteamOS; `--break-system-packages` is the documented
+  override). pulls in pyopenxr, glfw, numpy, PyOpenGL.
+- **Throughput:** 30 Hz active, 5 Hz idle (motion-gated). Service logs
+  `poses sent=N missed=M skipped=K` every 5 s so you can confirm flow
+  without tcpdump.
+- **Fallback:** if the headless extension isn't advertised (non-Valve,
+  non-Monado runtimes) or `pyopenxr` is missing, the backend bails and
+  the `stub` takes over — the install still comes up cleanly.
 
-- Monado IPC directly (`monado-cli`, `monado-service`).
-- A SteamVR Linux driver API (Valve's streaming stack must have one).
-- Compositor-side taps via `LD_PRELOAD` and `openxr_overlay` -style hooks.
+## Next steps
 
-Those are each much bigger projects than the stub, so getting a clean
-install path landed first unblocks everything else.
+- Capture timestamps are currently "now at send time". For truly
+  simultaneous sample pairs we want the runtime's last-measurement
+  time, which `locate_space` prediction smooths over. Investigate
+  `XR_KHR_locate_spaces` (the runtime advertises it) + a real frame
+  loop for `wait_frame`/`begin_frame`/`end_frame` even in headless.
+- Linear / angular velocity are zero'd today because `locate_space`
+  doesn't deliver them; adding a frame loop would also expose
+  `xrSpaceVelocity` via `XrSpaceVelocity` next-chain.
+- Gravity direction isn't sourced yet; probably needs a motion-sensor
+  extension or heuristic from the first stationary samples.

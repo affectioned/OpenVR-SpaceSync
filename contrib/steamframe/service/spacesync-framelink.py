@@ -339,6 +339,7 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
     idle_period = 1.0 / max(idle_hz, 0.1)
     period = active_period
     next_t = time.monotonic()
+    last_stats = time.monotonic()
 
     pose_sent = 0
     pose_missed = 0
@@ -360,6 +361,13 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
                 sock.sendto(pack_hello(seq, product, clock_hz, now_ticks_ns()), addr)
                 seq += 1
                 last_hello = now
+
+            # Periodic stats so you can see what's actually flowing without
+            # tcpdump. Rate-limited to once every 5s to stay quiet.
+            if now - last_stats >= 5.0:
+                log.info("stats: poses sent=%d missed=%d skipped=%d current_rate=%.1fHz",
+                         pose_sent, pose_missed, pose_skipped, 1.0 / period if period else 0.0)
+                last_stats = now
 
             if now >= next_t:
                 sample = backend.poll_hmd()
