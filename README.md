@@ -14,6 +14,24 @@ It is a fork of Nyabsi's [OpenVR SpaceOverride](https://github.com/Nyabsi/OpenVR
 
 > Beta. It works well on my setup (Galaxy XR + Virtual Desktop, Vive Tracker 3.0 on the head, three body trackers, two Index controllers, four base stations). Other setups should work too, but I have not tested them all.
 
+## Steam Frame integration (prototype, this branch only — issue #18)
+
+Experimental: a small daemon on the Steam Frame that sends raw unpredicted HMD poses + capture timestamps to the PC-side SpaceSync driver over UDP 29485. Read the write-up in [`contrib/steamframe/service/README.md`](contrib/steamframe/service/README.md).
+
+**One-shot install on the Frame** (replace `<PC-IP>` with your PC's LAN address — SpaceSync's status page shows it):
+
+```
+curl -sL https://raw.githubusercontent.com/affectioned/OpenVR-SpaceSync/feat/steam-frame-18/contrib/steamframe/service/bootstrap.sh | bash -s -- <PC-IP>
+```
+
+After it finishes, the PC's `spacesync_driver.log` should start showing `FrameLink: hello from <frame-ip>:…` every second. That's the whole smoke test for now — the service's `openxr` backend is still a placeholder; a working one is the next milestone.
+
+**SSH key only** (if you just want to seed the PC install key without running the service yet):
+
+```
+curl -sL https://raw.githubusercontent.com/affectioned/OpenVR-SpaceSync/feat/steam-frame-18/seed-framelink-key.sh | bash
+```
+
 ## Two ways to run it
 
 **Tracker drives the headset** (this is what SpaceOverride does). After calibration the driver throws away the headset's own pose and builds it from the head tracker plus the calibrated offset. Headset and trackers then live in the same lighthouse space. Great when your streamer displays the frame exactly the way SteamVR rendered it.
