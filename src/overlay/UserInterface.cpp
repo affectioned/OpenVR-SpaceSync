@@ -1087,7 +1087,12 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// -------- Playspace merge: which HMDs are we lining up? ------------
 	SectionHeader("Playspace merge", maxW);
-	VSpace(10.0f);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"Calibration is what makes these two tracking spaces line up. The local HMD defines the "
+		"lighthouse/stage reference; the Frame delivers its own tracked pose. Both must be present "
+		"for SpaceSync to solve the transform between them.");
+	VSpace(8.0f);
 	{
 		ImDrawList* dl = ImGui::GetWindowDrawList();
 		ImVec2 wp = ImGui::GetWindowPos();
@@ -1159,6 +1164,11 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// ---- Connection card -----------------------------------------------
 	SectionHeader("Connection", maxW);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"The driver's UDP socket for Frame data. Without a peer talking to the listener there's "
+		"nothing to substitute into calibration — the solve would fall back to OpenVR's own HMD "
+		"pose, which is the current baseline.");
 	VSpace(8.0f);
 
 	auto kv = [&](const char* label, const std::string& value, unsigned valueColor) {
@@ -1193,6 +1203,11 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// ---- Activity ------------------------------------------------------
 	SectionHeader("Activity", maxW);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"Freshness of the data feeding the calibrator. Samples older than 500 ms are treated as "
+		"stale and ignored. Low pose confidence is treated the same way — samples below the "
+		"threshold below get rejected from the solve.");
 	VSpace(8.0f);
 
 	auto ageText = [&](double ageMs, char* buf, size_t cap) {
@@ -1227,6 +1242,12 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// ---- Live pose from the Frame -------------------------------------
 	SectionHeader("Live HMD pose from Frame", maxW);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"The exact values the calibrator will use when it swaps in a Frame sample. Position / "
+		"orientation feed the solve directly; velocity is passed through to SteamVR so prediction "
+		"stays sane. If the flags show 'inertial', the Frame is coasting on IMU and the sample is "
+		"dropped by the solve.");
 	VSpace(8.0f);
 	if (s.hasPose)
 	{
@@ -1278,6 +1299,12 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// ---- Counters ------------------------------------------------------
 	SectionHeader("Counters", maxW);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"Wire-level health. Bad-magic drops mean something is sending junk to port 29485 that "
+		"isn't our protocol; bad-version drops mean the Frame service is out of date relative to "
+		"the driver. Both should stay at 0 — any climb indicates samples the calibrator never "
+		"got to see.");
 	VSpace(8.0f);
 
 	std::snprintf(line, sizeof line, "%llu", (unsigned long long)s.packets);
@@ -1293,6 +1320,12 @@ void UserInterface::RenderFrameLink(const Status& status)
 
 	// ---- Behaviour toggles --------------------------------------------
 	SectionHeader("Calibration integration", maxW);
+	VSpace(6.0f);
+	TextWrapped(F.regular, 12.0f, P.textMuted, maxW,
+		"Direct knobs that change how the next calibration run uses Frame data. Turn off the "
+		"checkbox to get exactly the old OpenVR-only behaviour. The min confidence slider sets "
+		"the floor for accepting a Frame sample — raising it discards noisier samples at the "
+		"cost of needing more time to collect enough good ones.");
 	VSpace(8.0f);
 	if (CheckboxRow("Use Frame data in calibration",
 		"When a Frame service is publishing fresh high-confidence poses, substitute them for the OpenVR-polled HMD pose during the next calibration run. Off makes SpaceSync behave exactly as it did before the Steam Frame integration.",
