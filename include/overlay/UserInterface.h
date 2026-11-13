@@ -43,7 +43,7 @@ public:
 	void SetOverlayInput(bool overlayInput) { overlayInput_ = overlayInput; }
 
 private:
-	enum class Tab { Calibration, Preview, Smoothing, Lighthouse, Settings };
+	enum class Tab { Calibration, Preview, Smoothing, Lighthouse, FrameLink, Settings };
 
 	struct Status
 	{
@@ -65,6 +65,7 @@ private:
 	void RenderLighthouse();
 	void RenderEdit(const Status& status);
 	void RenderSmoothing();
+	void RenderFrameLink();
 	void RenderSettings();
 	void RenderFooter();
 	void RenderWizard();

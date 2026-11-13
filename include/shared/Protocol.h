@@ -13,7 +13,7 @@
 
 namespace protocol
 {
-	const uint32_t Version = 20;
+	const uint32_t Version = 21;
 
 	enum RequestType
 	{
@@ -26,6 +26,7 @@ namespace protocol
 		RequestGetStatus,
 		RequestSetUniverseLock,
 		RequestGetFrameLinkSample,
+		RequestGetFrameLinkStatus,
 	};
 
 	enum ResponseType
@@ -35,6 +36,7 @@ namespace protocol
 		ResponseSuccess,
 		ResponseStatus,
 		ResponseFrameLinkSample,
+		ResponseFrameLinkStatus,
 	};
 
 	struct Protocol
@@ -186,6 +188,24 @@ namespace protocol
 		uint32_t deviceId;       // Frame-local id, 0 = HMD
 	};
 
+	// Snapshot of the FrameLink UDP listener's state, for the overlay's stats tab.
+	struct FrameLinkStatus
+	{
+		bool listening;                // true if the driver bound the UDP socket
+		uint16_t port;                 // bound port
+		bool hasPeer;                  // have we received from someone?
+		char peer[64];                 // sender's ip:port (null-terminated)
+		char product[32];              // last Hello.productId (null-terminated)
+		uint64_t frameClockHz;         // last Hello.frameClockHz
+		uint64_t packets;              // total packets accepted
+		uint64_t droppedBadMagic;      // UDP junk / wrong protocol
+		uint64_t droppedBadVersion;    // right magic, wrong version
+		double lastPacketAgeMs;        // -1 if no packet ever
+		double lastHelloAgeMs;         // -1 if no hello ever
+		double lastPoseAgeMs;          // -1 if no pose ever
+		double lastPoseConfidence;     // 0..1 for the most recent pose
+	};
+
 	struct Request
 	{
 		RequestType type;
@@ -211,6 +231,7 @@ namespace protocol
 			Protocol protocol;
 			DriverStatus status;
 			FrameLinkSample frameLinkSample;
+			FrameLinkStatus frameLinkStatus;
 		};
 
 		Response() : type(ResponseInvalid) { }

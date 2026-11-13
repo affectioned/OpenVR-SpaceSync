@@ -52,6 +52,10 @@ struct CalibrationContext
 	protocol::DriverStatus driverStatus = {};
 	bool refinementDirty = false;
 	bool mountRefined = false;
+	// Latest snapshot of the FrameLink UDP listener (issue #18 Steam Frame
+	// integration). Refreshed by the calibration tick, read by the overlay
+	// Frame Link tab.
+	protocol::FrameLinkStatus frameLinkStatus = {};
 	std::vector<Eigen::Vector3d> tiltHistory;
 	std::string tiltFingerprint;
 	int tiltSessionEntry = -1;

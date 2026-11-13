@@ -70,6 +70,24 @@ namespace framelink
 		// For logging / UI.
 		std::string PeerDescription() const;
 
+		struct Stats
+		{
+			bool listening = false;
+			uint16_t port = 0;
+			bool hasPeer = false;
+			std::string peer;
+			std::string product;
+			uint64_t frameClockHz = 0;
+			uint64_t packets = 0;
+			uint64_t droppedBadMagic = 0;
+			uint64_t droppedBadVersion = 0;
+			double lastPacketSec = -1.0;
+			double lastHelloSec = -1.0;
+			double lastPoseSec = -1.0;
+			double lastPoseConfidence = 0.0;
+		};
+		Stats GetStats() const;
+
 	private:
 		void Loop();
 		void Handle(const uint8_t* buf, int len, double nowSec, const std::string& peer);
@@ -88,9 +106,15 @@ namespace framelink
 		uint32_t relocWrite = 0;      // next write index
 		uint32_t relocLast = 0;       // highest sequence seen so far
 		std::string peer;
+		std::string product;
 		uint64_t frameClockHz = 0;
 		uint64_t packets = 0;
 		uint64_t droppedBadMagic = 0;
 		uint64_t droppedBadVersion = 0;
+		uint16_t boundPort = 0;
+		double lastPacketSec = -1.0;
+		double lastHelloSec = -1.0;
+		double lastPoseSec = -1.0;
+		double lastPoseConfidence = 0.0;
 	};
 }

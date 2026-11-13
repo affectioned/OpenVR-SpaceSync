@@ -77,6 +77,10 @@ namespace framelink
 
 		sock.store((uintptr_t)s);
 		running.store(true);
+		{
+			std::lock_guard<std::mutex> lk(mutex);
+			boundPort = port;
+		}
 		worker = std::thread(&Listener::Loop, this);
 		LOG("FrameLink: listening on UDP %u", port);
 		return true;
@@ -141,6 +145,7 @@ namespace framelink
 		std::lock_guard<std::mutex> lk(mutex);
 		packets++;
 		peer = senderPeer;
+		lastPacketSec = nowSec;
 
 		switch (h.type)
 		{
@@ -150,11 +155,15 @@ namespace framelink
 			Hello msg;
 			std::memcpy(&msg, buf, sizeof msg);
 			frameClockHz = msg.frameClockHz;
-			char product[33] = {};
-			std::memcpy(product, msg.productId, sizeof msg.productId);
-			product[32] = 0;
-			LOG("FrameLink: hello from %s product=\"%s\" clockHz=%llu",
-				senderPeer.c_str(), product, (unsigned long long)msg.frameClockHz);
+			char productBuf[33] = {};
+			std::memcpy(productBuf, msg.productId, sizeof msg.productId);
+			productBuf[32] = 0;
+			bool firstHello = product.empty();
+			product = productBuf;
+			lastHelloSec = nowSec;
+			if (firstHello)
+				LOG("FrameLink: hello from %s product=\"%s\" clockHz=%llu",
+					senderPeer.c_str(), productBuf, (unsigned long long)msg.frameClockHz);
 			break;
 		}
 		case MsgPose:
@@ -174,6 +183,8 @@ namespace framelink
 			std::memcpy(snap.angVelocity, msg.angVelocity, sizeof snap.angVelocity);
 			snap.captureTicks = msg.captureTicks;
 			snap.pcSeconds = nowSec;
+			lastPoseSec = nowSec;
+			lastPoseConfidence = msg.confidence;
 			break;
 		}
 		case MsgGravity:
@@ -259,6 +270,26 @@ namespace framelink
 		outSeq = bestSeq;
 		lastSeq = bestSeq;
 		return true;
+	}
+
+	Listener::Stats Listener::GetStats() const
+	{
+		std::lock_guard<std::mutex> lk(mutex);
+		Stats s;
+		s.listening = running.load();
+		s.port = boundPort;
+		s.hasPeer = !peer.empty();
+		s.peer = peer;
+		s.product = product;
+		s.frameClockHz = frameClockHz;
+		s.packets = packets;
+		s.droppedBadMagic = droppedBadMagic;
+		s.droppedBadVersion = droppedBadVersion;
+		s.lastPacketSec = lastPacketSec;
+		s.lastHelloSec = lastHelloSec;
+		s.lastPoseSec = lastPoseSec;
+		s.lastPoseConfidence = lastPoseConfidence;
+		return s;
 	}
 
 	std::string Listener::PeerDescription() const
