@@ -46,3 +46,6 @@ bin/icon.png
 bin/manifest.vrmanifest
 bin/NOTICE.md
 
+# Python
+__pycache__/
+*.pyc

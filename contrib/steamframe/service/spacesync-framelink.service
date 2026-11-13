@@ -1,0 +1,28 @@
+# systemd unit for the SpaceSync FrameLink service on the Steam Frame.
+#
+# Install with contrib/steamframe/service/install.sh. Env is sourced from
+# /etc/default/spacesync-framelink so the PC IP can be set once per device.
+
+[Unit]
+Description=SpaceSync FrameLink sender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/spacesync-framelink
+ExecStart=/usr/local/bin/spacesync-framelink --host ${SPACESYNC_HOST} --port ${SPACESYNC_PORT} --hz ${SPACESYNC_HZ} --idle-hz ${SPACESYNC_IDLE_HZ} --backends ${SPACESYNC_BACKENDS}
+Restart=on-failure
+RestartSec=5
+User=deck
+# Read-only root on SteamOS: we don't need to write anywhere.
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+# Keep the service out of battery-killing CPU/scheduler classes.
+Nice=5
+CPUWeight=20
+IOWeight=20
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# /etc/default/spacesync-framelink
+# Edit SPACESYNC_HOST to your PC's LAN address, then:
+#   sudo systemctl restart spacesync-framelink
+
+SPACESYNC_HOST=192.168.1.10
+SPACESYNC_PORT=29485
+# Active rate (while the head is moving). Calibration and jitter correction
+# work fine at 30; bump to 72 only if a later measurement shows it helps.
+SPACESYNC_HZ=30
+# Rate once the head has been still ~1s. Keeps the driver's staleness gate
+# happy without waking the CPU every 14 ms when nothing is happening.
+SPACESYNC_IDLE_HZ=5
+# Comma-separated backend preference. Try the real tracking backend first,
+# fall back to stub (handshake only).
+SPACESYNC_BACKENDS=openxr,stub
