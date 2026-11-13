@@ -1255,6 +1255,23 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					// Before the pose enters the clock series, a step there reads as a velocity spike.
 					double jumpYaw = 0.0;
 					vr::HmdVector3d_t jumpTranslation = { 0, 0, 0 };
+
+					// Issue #18 — the Frame tells us directly when SLAM relocalized. Flag
+					// that moment as a jump so downstream code (drift, Stay Aligned,
+					// clock) rebases from the new frame instead of fighting the step
+					// for the half-second it takes to detect heuristically.
+					framelink::RelocalizeEvent relocEv;
+					uint32_t relocSeq = 0;
+					if (frameLink.NextRelocalize(frameLinkRelocSeq, relocEv, relocSeq))
+					{
+						lastHmdJumpTime = nowSeconds;
+						double shift = std::sqrt(
+							relocEv.translation[0] * relocEv.translation[0] +
+							relocEv.translation[1] * relocEv.translation[1] +
+							relocEv.translation[2] * relocEv.translation[2]);
+						LOG("Frame relocalization seq=%u, shift %.3f m — marking HMD jump", relocSeq, shift);
+					}
+
 					if (freshPose && DetectHmdKinematicJump(pose, rawRotation, rawPosition, hmdTime))
 						lastHmdJumpTime = nowSeconds;
 					if (DetectHmdFrameJump(pose, jumpYaw, jumpTranslation))
@@ -1402,7 +1419,44 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double confidence = drift.valid ? DriftSampleConfidence(ts.linSpeed, ts.angSpeed) * quality : 1.0;
 					const double maxLinSpeed = 2.75;
 					const double maxAngSpeed = 3.5;
-					const bool usable = age <= 0.05 && (!drift.valid || (ts.linSpeed < maxLinSpeed && ts.angSpeed < maxAngSpeed));
+					bool usable = age <= 0.05 && (!drift.valid || (ts.linSpeed < maxLinSpeed && ts.angSpeed < maxAngSpeed));
+
+					// Issue #18 — gate drift updates on the Frame-reported HMD confidence,
+					// so when the Frame tells us it's tracking poorly (cameras blocked,
+					// IMU-only coasting) we hold alignment instead of poisoning drift
+					// with bad data. Silent no-op if no Frame service is talking.
+					framelink::PoseSnapshot framePose;
+					bool haveFramePose = frameLink.LatestPose(0, 0.3, framePose);
+					if (haveFramePose)
+					{
+						const double minConfidence = 0.5;
+						int trust = 0;
+						if (framePose.flags & framelink::PoseFlagInertialOnly)
+							trust = 2;
+						else if (framePose.confidence < minConfidence)
+							trust = 1;
+						if (trust != 0)
+							usable = false;
+						if (trust != frameLinkTrustState && nowSeconds - frameLinkTrustLogTime > 2.0)
+						{
+							frameLinkTrustLogTime = nowSeconds;
+							frameLinkTrustState = trust;
+							if (trust == 0)
+								LOG("Frame confidence restored (%.2f), drift updates resumed", framePose.confidence);
+							else
+								LOG("Frame confidence %s (%.2f%s), holding drift alignment",
+									trust == 2 ? "inertial-only" : "low", framePose.confidence,
+									(framePose.flags & framelink::PoseFlagInertialOnly) ? " — IMU coasting" : "");
+						}
+					}
+					else if (frameLinkTrustState != -1 && frameLinkTrustState != 0 && nowSeconds - frameLinkTrustLogTime > 2.0)
+					{
+						// Frame stream stopped while gated; release the gate so we don't
+						// stay stuck holding alignment on a pose that's no longer updating.
+						frameLinkTrustLogTime = nowSeconds;
+						frameLinkTrustState = -1;
+					}
+
 					if (usable)
 						UpdateDrift(headRotation, headPosition, rawRotation, rawPosition, confidence, quality);
 

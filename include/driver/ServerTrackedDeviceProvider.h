@@ -123,9 +123,12 @@ private:
 	universe::Probe universeProbe;
 	universe::Lock universeLock;
 
-	// Scaffold: receives data from a Steam Frame service (issue #18). The driver
-	// works without it — if no packets ever arrive, nothing changes.
+	// Receives data from a Steam Frame service (issue #18). The driver works
+	// without it — if no packets ever arrive, nothing changes.
 	framelink::Listener frameLink;
+	uint32_t frameLinkRelocSeq = 0;      // highest MsgRelocalize.sequence we've consumed
+	int frameLinkTrustState = -1;        // -1=unknown, 0=trusted, 1=low-conf, 2=inertial
+	double frameLinkTrustLogTime = 0.0;
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };
