@@ -51,6 +51,9 @@ system_install() {
 
     sudo install -Dm755 "$PY"  /usr/local/bin/spacesync-framelink
     sudo install -Dm644 "$SVC" /etc/systemd/system/spacesync-framelink.service
+    # Patch User= to whoever actually invoked this installer (Frame ships
+    # with `steamos`, Deck ships with `deck`).
+    sudo sed -i "s/^User=.*/User=${USER}/" /etc/systemd/system/spacesync-framelink.service
 
     if [[ ! -f /etc/default/spacesync-framelink ]]; then
         sudo install -Dm644 "$DEF" /etc/default/spacesync-framelink
