@@ -314,7 +314,7 @@ UserInterface::WindowAction UserInterface::Render(bool runningInOverlay)
 				RenderLighthouse();
 				break;
 			case Tab::FrameLink:
-				RenderFrameLink();
+				RenderFrameLink(status);
 				break;
 			case Tab::Settings:
 				RenderSettings();
@@ -1074,7 +1074,7 @@ void UserInterface::RenderSmoothing()
 	}
 }
 
-void UserInterface::RenderFrameLink()
+void UserInterface::RenderFrameLink(const Status& status)
 {
 	const float maxW = std::min(820.0f, PageDesignWidth());
 	const auto& s = CalCtx.frameLinkStatus;
@@ -1083,6 +1083,78 @@ void UserInterface::RenderFrameLink()
 		"Live status of the UDP listener that receives data from a Steam Frame service "
 		"(issue #18). The Frame-side sender ships raw HMD poses + confidence to the driver, "
 		"which the calibration pipeline can substitute in place of OpenVR's predicted pose.");
+	VSpace(18.0f);
+
+	// -------- Playspace merge: which HMDs are we lining up? ------------
+	SectionHeader("Playspace merge", maxW);
+	VSpace(10.0f);
+	{
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		ImVec2 wp = ImGui::GetWindowPos();
+
+		const float cardW = (px(maxW) - px(32.0f)) * 0.5f;
+		const float cardH = px(96.0f);
+
+		auto hmdCard = [&](const char* role, const char* model, const char* serial, bool connected) {
+			ImVec2 p0 = ImGui::GetCursorScreenPos();
+			ImVec2 p1(p0.x + cardW, p0.y + cardH);
+			unsigned border = connected ? P.borderStrong : P.border;
+			dl->AddRectFilled(p0, p1, Col(P.card), px(6.0f));
+			dl->AddRect(p0, p1, Col(border), px(6.0f), 0, px(1.0f));
+
+			// A simple HMD silhouette drawn with primitives — one rounded body,
+			// two eyes, a strap tab. No asset needed. Tints dim when disconnected.
+			unsigned glyph = connected ? P.textStrong : P.textDim;
+			float gx = p0.x + px(18.0f) + px(20.0f);
+			float gy = p0.y + px(16.0f) + px(16.0f);
+			ImVec2 body0(gx - px(22.0f), gy - px(12.0f));
+			ImVec2 body1(gx + px(22.0f), gy + px(12.0f));
+			dl->AddRectFilled(body0, body1, Col(glyph, 0.18f), px(4.0f));
+			dl->AddRect(body0, body1, Col(glyph), px(4.0f), 0, px(1.2f));
+			dl->AddCircleFilled(ImVec2(gx - px(10.0f), gy), px(3.0f), Col(glyph));
+			dl->AddCircleFilled(ImVec2(gx + px(10.0f), gy), px(3.0f), Col(glyph));
+			dl->AddLine(ImVec2(body0.x - px(6.0f), body0.y + px(6.0f)),
+				ImVec2(body0.x, body0.y + px(6.0f)), Col(glyph), px(1.5f));
+			dl->AddLine(ImVec2(body1.x, body0.y + px(6.0f)),
+				ImVec2(body1.x + px(6.0f), body0.y + px(6.0f)), Col(glyph), px(1.5f));
+
+			// Text block to the right of the glyph.
+			float tx = gx + px(36.0f);
+			DrawText(dl, F.regular, 10.5f, ImVec2(tx, p0.y + px(14.0f)),
+				connected ? P.textMuted : P.textDim, role);
+			DrawText(dl, F.semibold, 14.0f, ImVec2(tx, p0.y + px(28.0f)),
+				connected ? P.textBright : P.textMuted, model && *model ? model : "(disconnected)");
+			DrawText(dl, F.mono, 11.0f, ImVec2(tx, p0.y + px(52.0f)),
+				connected ? P.textDim : P.textDim, serial && *serial ? serial : "-");
+
+			// Tiny status dot in the corner.
+			unsigned dotCol = connected ? P.green : P.danger;
+			dl->AddCircleFilled(ImVec2(p1.x - px(14.0f), p0.y + px(14.0f)), px(4.0f), Col(dotCol));
+
+			ImGui::Dummy(ImVec2(cardW, cardH));
+		};
+
+		// Local HMD (whatever SteamVR on this PC is currently rendering for).
+		const char* localModel = status.hmd ? status.hmd->model.c_str() : "";
+		const char* localSerial = status.hmd ? status.hmd->serial.c_str() : "";
+		hmdCard("Local HMD", localModel, localSerial, status.hmd != nullptr);
+
+		ImGui::SameLine(0.0f, px(16.0f));
+
+		// Frame HMD identified by the Hello's productId.
+		char remoteModel[48];
+		if (s.hasPeer && s.product[0])
+			std::snprintf(remoteModel, sizeof remoteModel, "%s", s.product);
+		else
+			std::snprintf(remoteModel, sizeof remoteModel, "%s", "(no Frame)");
+		hmdCard("Frame HMD (via FrameLink)", remoteModel, s.hasPeer ? s.peer : "-", s.hasPeer);
+
+		VSpace(8.0f);
+		TextWrapped(F.regular, 12.0f, P.textDim, maxW,
+			"Calibration aligns the local HMD's tracking space to the Frame's "
+			"SLAM space using the head-tracker samples. Both must be present for the "
+			"substitution to actually feed poses into the solve.");
+	}
 	VSpace(18.0f);
 
 	// ---- Connection card -----------------------------------------------
@@ -1150,6 +1222,57 @@ void UserInterface::RenderFrameLink()
 	std::snprintf(line, sizeof line, "%.2f", s.lastPoseConfidence);
 	kv("Pose confidence", line, s.lastPoseConfidence >= 0.5 ? P.green :
 	                            s.lastPoseConfidence > 0.0 ? P.yellow : P.textDim);
+
+	VSpace(14.0f);
+
+	// ---- Live pose from the Frame -------------------------------------
+	SectionHeader("Live HMD pose from Frame", maxW);
+	VSpace(8.0f);
+	if (s.hasPose)
+	{
+		std::snprintf(line, sizeof line, "%+6.3f %+6.3f %+6.3f m",
+			s.posePosition[0], s.posePosition[1], s.posePosition[2]);
+		kv("Position xyz", line, P.textStrong);
+
+		// Convert wxyz -> yaw/pitch/roll (degrees, SpaceSync Y-up convention).
+		double qw = s.poseOrientation[0], qx = s.poseOrientation[1];
+		double qy = s.poseOrientation[2], qz = s.poseOrientation[3];
+		double sinp = 2.0 * (qw * qx - qy * qz);
+		double pitch = sinp >=  1.0 ?  3.14159265358979 * 0.5 :
+		               sinp <= -1.0 ? -3.14159265358979 * 0.5 : std::asin(sinp);
+		double yaw   = std::atan2(2.0 * (qw * qy + qz * qx), 1.0 - 2.0 * (qx * qx + qy * qy));
+		double roll  = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qx * qx + qz * qz));
+		const double rad2deg = 180.0 / 3.14159265358979;
+		std::snprintf(line, sizeof line, "yaw %+6.1f  pitch %+6.1f  roll %+6.1f deg",
+			yaw * rad2deg, pitch * rad2deg, roll * rad2deg);
+		kv("Orientation", line, P.textStrong);
+
+		double lin = std::sqrt(s.poseLinVelocity[0] * s.poseLinVelocity[0]
+		                      + s.poseLinVelocity[1] * s.poseLinVelocity[1]
+		                      + s.poseLinVelocity[2] * s.poseLinVelocity[2]);
+		std::snprintf(line, sizeof line, "%.3f m/s", lin);
+		kv("Linear speed", line, lin > 0.05 ? P.green : P.textDim);
+
+		double ang = std::sqrt(s.poseAngVelocity[0] * s.poseAngVelocity[0]
+		                      + s.poseAngVelocity[1] * s.poseAngVelocity[1]
+		                      + s.poseAngVelocity[2] * s.poseAngVelocity[2]);
+		std::snprintf(line, sizeof line, "%.3f rad/s", ang);
+		kv("Angular speed", line, ang > 0.05 ? P.green : P.textDim);
+
+		// Flag breakdown so the user sees when tracking drops to inertial-only.
+		char flagBuf[48] = {};
+		if (s.poseFlags & 0x1)  std::strcat(flagBuf, "pos ");
+		if (s.poseFlags & 0x2)  std::strcat(flagBuf, "rot ");
+		if (s.poseFlags & 0x4)  std::strcat(flagBuf, "inertial ");
+		if (!flagBuf[0])        std::strcpy(flagBuf, "(none)");
+		kv("Pose flags", flagBuf, (s.poseFlags & 0x4) ? P.yellow : P.textStrong);
+	}
+	else
+	{
+		TextWrapped(F.regular, 12.5f, P.textDim, maxW,
+			"No fresh pose from the Frame. If the service is running, the headset is "
+			"probably not currently tracked (out of range, taken off, or Fallback_RotationOnly).");
+	}
 
 	VSpace(14.0f);
 

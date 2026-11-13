@@ -65,7 +65,7 @@ private:
 	void RenderLighthouse();
 	void RenderEdit(const Status& status);
 	void RenderSmoothing();
-	void RenderFrameLink();
+	void RenderFrameLink(const Status& status);
 	void RenderSettings();
 	void RenderFooter();
 	void RenderWizard();

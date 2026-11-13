@@ -201,6 +201,13 @@ class OpenVRBackend(Backend):
         av = p.vAngularVelocity
         # Running_OK = 200, Running_OutOfRange = 201, Fallback_RotationOnly = 300
         conf = 0.95 if int(p.eTrackingResult) == 200 else 0.6
+        # OpenVR's TrackedDevicePose_t doesn't carry a capture timestamp —
+        # the pose it returns is runtime-interpolated to the time we asked
+        # for (we pass 0.0 for zero prediction, i.e. "right now"). So the
+        # best we can do is stamp "now" and rely on the PC side pairing this
+        # against its own call-time. If we ever need true last-measurement
+        # time, OpenXR's XR_KHR_locate_spaces extension gives a better signal.
+        capture_ticks = now_ticks_ns()
         return {
             "pos": pos,
             "quat": quat,
@@ -208,7 +215,7 @@ class OpenVRBackend(Backend):
             "ang": (float(av[0]), float(av[1]), float(av[2])),
             "flags": FLAG_POSITION | FLAG_ROTATION,
             "confidence": conf,
-            "capture_ticks": now_ticks_ns(),
+            "capture_ticks": capture_ticks,
         }
 
     def poll_gravity(self):

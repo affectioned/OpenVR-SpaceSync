@@ -552,6 +552,26 @@ void ServerTrackedDeviceProvider::GetFrameLinkStatus(protocol::FrameLinkStatus& 
 	out.lastHelloAgeMs = s.lastHelloSec >= 0.0 ? (nowSec - s.lastHelloSec) * 1000.0 : -1.0;
 	out.lastPoseAgeMs = s.lastPoseSec >= 0.0 ? (nowSec - s.lastPoseSec) * 1000.0 : -1.0;
 	out.lastPoseConfidence = s.lastPoseConfidence;
+
+	framelink::PoseSnapshot snap;
+	out.hasPose = frameLink.LatestPose(0, 2.0, snap);  // 2s window — UI wants the recently-known pose even on brief drops
+	if (out.hasPose)
+	{
+		out.poseFlags = snap.flags;
+		for (int i = 0; i < 3; i++) out.posePosition[i] = snap.position[i];
+		for (int i = 0; i < 4; i++) out.poseOrientation[i] = snap.orientation[i];
+		for (int i = 0; i < 3; i++) out.poseLinVelocity[i] = snap.linVelocity[i];
+		for (int i = 0; i < 3; i++) out.poseAngVelocity[i] = snap.angVelocity[i];
+	}
+	else
+	{
+		out.poseFlags = 0;
+		for (int i = 0; i < 3; i++) out.posePosition[i] = 0.0;
+		out.poseOrientation[0] = 1.0;
+		for (int i = 1; i < 4; i++) out.poseOrientation[i] = 0.0;
+		for (int i = 0; i < 3; i++) out.poseLinVelocity[i] = 0.0;
+		for (int i = 0; i < 3; i++) out.poseAngVelocity[i] = 0.0;
+	}
 }
 
 void ServerTrackedDeviceProvider::ApplyDrift(vr::DriverPose_t& pose) const

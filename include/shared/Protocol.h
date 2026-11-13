@@ -204,6 +204,13 @@ namespace protocol
 		double lastHelloAgeMs;         // -1 if no hello ever
 		double lastPoseAgeMs;          // -1 if no pose ever
 		double lastPoseConfidence;     // 0..1 for the most recent pose
+		// Latest HMD pose from the Frame (deviceId=0). Zeroed when hasPose==false.
+		bool hasPose;
+		uint32_t poseFlags;
+		double posePosition[3];
+		double poseOrientation[4];     // wxyz
+		double poseLinVelocity[3];
+		double poseAngVelocity[3];
 	};
 
 	struct Request
