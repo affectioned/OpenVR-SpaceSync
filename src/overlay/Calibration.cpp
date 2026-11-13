@@ -7,6 +7,7 @@
 #include "Configuration.h"
 #include "IPCClient.h"
 #include "Sound.h"
+#include "FrameLinkProtocol.h"
 
 #include <string>
 #include <vector>
@@ -57,6 +58,11 @@ struct Sample
 	Pose ref, target;
 	bool valid;
 	double time = 0.0;
+	// #18 Frame data attached to this sample, when the pipeline supplied it.
+	// Lets later passes pair SLAM & lighthouse samples by real capture time.
+	bool frameLinkUsed = false;
+	uint64_t frameCaptureTicks = 0;
+	double frameConfidence = 0.0;
 	Sample() : valid(false) { }
 	Sample(Pose ref, Pose target) : valid(true), ref(ref), target(target) { }
 };
@@ -602,6 +608,54 @@ static double RetargetingErrorRMS(const std::vector<Sample> &samples, const Eige
 	return std::sqrt(accum / (double)samples.size());
 }
 
+// Try to pull a Steam Frame HMD pose for this calibration tick. Returns false
+// if no Frame data is available, flagged inertial-only, or below confidence.
+// When it returns true, writes a Pose equivalent to what the Frame observed at
+// capture time (rather than the predicted OpenVR pose).
+static bool TryFrameHmdPose(const CalibrationContext &ctx, Pose &out,
+	uint64_t &outCaptureTicks, double &outConfidence, bool &outRejectLowConf)
+{
+	outRejectLowConf = false;
+	if (!ctx.useFrameLink)
+		return false;
+	if (!Driver.IsConnected())
+		return false;
+
+	protocol::Request req(protocol::RequestGetFrameLinkSample);
+	req.getFrameLinkSample.deviceId = 0;  // Frame HMD
+	protocol::Response resp;
+	try
+	{
+		resp = Driver.SendBlocking(req);
+	}
+	catch (...) { return false; }
+
+	if (resp.type != protocol::ResponseFrameLinkSample || !resp.frameLinkSample.valid)
+		return false;
+
+	const auto &s = resp.frameLinkSample;
+	if (s.flags & framelink::PoseFlagInertialOnly)
+	{
+		outRejectLowConf = true;
+		outConfidence = s.confidence;
+		return false;
+	}
+	if (s.confidence < ctx.frameLinkMinConfidence)
+	{
+		outRejectLowConf = true;
+		outConfidence = s.confidence;
+		return false;
+	}
+
+	Eigen::Quaterniond q(s.orientation[0], s.orientation[1], s.orientation[2], s.orientation[3]);
+	q.normalize();
+	out.rot = q.toRotationMatrix();
+	out.trans = Eigen::Vector3d(s.position[0], s.position[1], s.position[2]);
+	outCaptureTicks = s.captureTicks;
+	outConfidence = s.confidence;
+	return true;
+}
+
 Sample CollectSample(const CalibrationContext &ctx, const char *&problem)
 {
 	const vr::TrackedDevicePose_t &reference = ctx.devicePoses[0];
@@ -615,10 +669,22 @@ Sample CollectSample(const CalibrationContext &ctx, const char *&problem)
 	if (problem)
 		return Sample();
 
-	return Sample(
-		Pose(reference.mDeviceToAbsoluteTracking),
-		Pose(target.mDeviceToAbsoluteTracking)
-	);
+	Pose hmdPose(reference.mDeviceToAbsoluteTracking);
+	uint64_t captureTicks = 0;
+	double frameConfidence = 0.0;
+	bool rejectLowConf = false;
+	bool usedFrame = TryFrameHmdPose(ctx, hmdPose, captureTicks, frameConfidence, rejectLowConf);
+	if (rejectLowConf)
+	{
+		problem = "Steam Frame signal low confidence (move so the cameras see the controllers)";
+		return Sample();
+	}
+
+	Sample s(hmdPose, Pose(target.mDeviceToAbsoluteTracking));
+	s.frameLinkUsed = usedFrame;
+	s.frameCaptureTicks = captureTicks;
+	s.frameConfidence = frameConfidence;
+	return s;
 }
 
 vr::HmdQuaternion_t VRRotationQuat(Eigen::Vector3d eulerdeg)
@@ -1707,6 +1773,22 @@ void CalibrationTick(double time)
 			CalCtx.Log("Not enough samples were collected, aborting calibration! Previous calibration restored.\n");
 			AbortAndRestoreProfile(ctx);
 			return;
+		}
+
+		{
+			size_t framed = 0;
+			double confSum = 0.0;
+			for (auto &sm : samples)
+			{
+				if (sm.frameLinkUsed) { framed++; confSum += sm.frameConfidence; }
+			}
+			if (framed > 0)
+			{
+				char buf[192];
+				snprintf(buf, sizeof buf, "Steam Frame data used for %zu / %zu samples (avg confidence %.2f)\n",
+					framed, samples.size(), confSum / (double)framed);
+				CalCtx.Log(buf);
+			}
 		}
 
 

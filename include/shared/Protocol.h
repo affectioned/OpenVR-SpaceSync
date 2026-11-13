@@ -13,7 +13,7 @@
 
 namespace protocol
 {
-	const uint32_t Version = 19;
+	const uint32_t Version = 20;
 
 	enum RequestType
 	{
@@ -25,6 +25,7 @@ namespace protocol
 		RequestSetOneEuro,
 		RequestGetStatus,
 		RequestSetUniverseLock,
+		RequestGetFrameLinkSample,
 	};
 
 	enum ResponseType
@@ -33,6 +34,7 @@ namespace protocol
 		ResponseHandshake,
 		ResponseSuccess,
 		ResponseStatus,
+		ResponseFrameLinkSample,
 	};
 
 	struct Protocol
@@ -166,6 +168,24 @@ namespace protocol
 		double lockInconsistentM;
 	};
 
+	// Steam Frame link snapshot published to the overlay. See issue #18.
+	struct FrameLinkSample
+	{
+		bool valid;              // false = no Frame data, calibrator falls back to OpenVR pose
+		uint32_t deviceId;
+		uint32_t flags;          // framelink::PoseFlag bitmask
+		double confidence;       // 0..1
+		double position[3];
+		double orientation[4];   // wxyz
+		uint64_t captureTicks;   // Frame clock
+		double ageMs;            // PC-side age at the moment of this response
+	};
+
+	struct GetFrameLinkSample
+	{
+		uint32_t deviceId;       // Frame-local id, 0 = HMD
+	};
+
 	struct Request
 	{
 		RequestType type;
@@ -176,6 +196,7 @@ namespace protocol
 			SetSlamSync setSlamSync;
 			SetOneEuro setOneEuro;
 			SetUniverseLock setUniverseLock;
+			GetFrameLinkSample getFrameLinkSample;
 		};
 
 		Request() : type(RequestInvalid) { }
@@ -189,6 +210,7 @@ namespace protocol
 		union {
 			Protocol protocol;
 			DriverStatus status;
+			FrameLinkSample frameLinkSample;
 		};
 
 		Response() : type(ResponseInvalid) { }

@@ -493,6 +493,38 @@ void ServerTrackedDeviceProvider::GetStatus(protocol::DriverStatus& status)
 	}
 }
 
+void ServerTrackedDeviceProvider::GetFrameLinkSample(uint32_t deviceId, protocol::FrameLinkSample& out)
+{
+	framelink::PoseSnapshot snap;
+	// 500 ms is generous — the Frame should push at ≥72 Hz. Anything older than that is stale.
+	const double maxAge = 0.5;
+	if (!frameLink.LatestPose(deviceId, maxAge, snap))
+	{
+		out.valid = false;
+		out.deviceId = deviceId;
+		out.flags = 0;
+		out.confidence = 0.0;
+		out.position[0] = out.position[1] = out.position[2] = 0.0;
+		out.orientation[0] = 1.0; out.orientation[1] = 0.0; out.orientation[2] = 0.0; out.orientation[3] = 0.0;
+		out.captureTicks = 0;
+		out.ageMs = 0.0;
+		return;
+	}
+	out.valid = true;
+	out.deviceId = snap.deviceId;
+	out.flags = snap.flags;
+	out.confidence = snap.confidence;
+	for (int i = 0; i < 3; i++) out.position[i] = snap.position[i];
+	for (int i = 0; i < 4; i++) out.orientation[i] = snap.orientation[i];
+	out.captureTicks = snap.captureTicks;
+
+	LARGE_INTEGER now, freq;
+	QueryPerformanceCounter(&now);
+	QueryPerformanceFrequency(&freq);
+	double nowSec = now.QuadPart / (double)freq.QuadPart;
+	out.ageMs = (nowSec - snap.pcSeconds) * 1000.0;
+}
+
 void ServerTrackedDeviceProvider::ApplyDrift(vr::DriverPose_t& pose) const
 {
 	double slamScale = SlamToCorrectedScale();

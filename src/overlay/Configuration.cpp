@@ -137,6 +137,20 @@ static void ParseProfile(CalibrationContext &ctx, std::istream &stream)
 	else
 		ctx.allowSameSpaceCalibration = false;
 
+	if (obj["useFrameLink"].is<bool>())
+		ctx.useFrameLink = obj["useFrameLink"].get<bool>();
+	else
+		ctx.useFrameLink = true;
+
+	if (obj["frameLinkMinConfidence"].is<double>())
+	{
+		ctx.frameLinkMinConfidence = obj["frameLinkMinConfidence"].get<double>();
+		if (ctx.frameLinkMinConfidence < 0.0) ctx.frameLinkMinConfidence = 0.0;
+		if (ctx.frameLinkMinConfidence > 1.0) ctx.frameLinkMinConfidence = 1.0;
+	}
+	else
+		ctx.frameLinkMinConfidence = 0.5;
+
 	if (obj["lhSmoothing"].is<double>())
 	{
 		ctx.lighthouseSmoothing = obj["lhSmoothing"].get<double>();
@@ -322,6 +336,8 @@ static void WriteProfile(CalibrationContext &ctx, std::ostream &out)
 	profile["dynPowerMode"].set<double>(dynPowerMode);
 	profile["bsManagement"].set<bool>(ctx.basestationManagement);
 	profile["allowSameSpaceCal"].set<bool>(ctx.allowSameSpaceCalibration);
+	profile["useFrameLink"].set<bool>(ctx.useFrameLink);
+	profile["frameLinkMinConfidence"].set<double>(ctx.frameLinkMinConfidence);
 	double lhSmoothing = ctx.lighthouseSmoothing;
 	profile["lhSmoothing"].set<double>(lhSmoothing);
 	double latencyComp = ctx.latencyCompensation;

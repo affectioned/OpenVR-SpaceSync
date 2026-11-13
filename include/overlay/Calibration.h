@@ -81,6 +81,11 @@ struct CalibrationContext
 	int dynamicPowerMode = 0;
 	bool basestationManagement = true;
 	bool allowSameSpaceCalibration = false;
+	// #18 Steam Frame link: use raw unpredicted Frame HMD poses + confidence
+	// during calibration when the driver reports data. Silently inactive if
+	// the Frame service isn't running.
+	bool useFrameLink = true;
+	double frameLinkMinConfidence = 0.5;
 	bool disableVoiceHelp = false;
 	int language = 0;
 
