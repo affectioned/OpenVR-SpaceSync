@@ -1437,16 +1437,31 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 							trust = 1;
 						if (trust != 0)
 							usable = false;
-						if (trust != frameLinkTrustState && nowSeconds - frameLinkTrustLogTime > 2.0)
+						// First transition fires immediately; subsequent ones wait 2 s so
+						// a flickery signal doesn't spam the log.
+						bool firstTransition = frameLinkTrustState == -1;
+						if (trust != frameLinkTrustState && (firstTransition || nowSeconds - frameLinkTrustLogTime > 2.0))
 						{
 							frameLinkTrustLogTime = nowSeconds;
 							frameLinkTrustState = trust;
-							if (trust == 0)
-								LOG("Frame confidence restored (%.2f), drift updates resumed", framePose.confidence);
-							else
-								LOG("Frame confidence %s (%.2f%s), holding drift alignment",
-									trust == 2 ? "inertial-only" : "low", framePose.confidence,
+							// Suppress the "restored" log on the very first tick — we
+							// never told anyone it was broken.
+							if (!firstTransition)
+							{
+								if (trust == 0)
+									LOG("Frame confidence restored (%.2f), drift updates resumed", framePose.confidence);
+								else
+									LOG("Frame confidence %s (%.2f%s), holding drift alignment",
+										trust == 2 ? "inertial-only" : "low", framePose.confidence,
+										(framePose.flags & framelink::PoseFlagInertialOnly) ? " — IMU coasting" : "");
+							}
+							else if (trust != 0)
+							{
+								// Odd case: first Frame pose ever is already bad. Log it.
+								LOG("Frame first pose %s (%.2f%s), holding drift alignment",
+									trust == 2 ? "inertial-only" : "low confidence", framePose.confidence,
 									(framePose.flags & framelink::PoseFlagInertialOnly) ? " — IMU coasting" : "");
+							}
 						}
 					}
 					else if (frameLinkTrustState != -1 && frameLinkTrustState != 0 && nowSeconds - frameLinkTrustLogTime > 2.0)
