@@ -733,25 +733,76 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 		hip.rotation = hs.rotation;
 	}
 
-	stay::Event ev = stayAligner.step(hmdTime, rawRotation, vecFromArray(rawPosition), hip);
+	// Issue #18 — in HMD Driven + No Tracker, Stay Aligned IS the continuous
+	// correction loop. Gate its step() on Frame confidence the same way we
+	// gate drift updates in Follow mode: if the Frame reports a bad pose,
+	// skip the step so the aligner doesn't fold that garbage into its
+	// internal state. The last-good correction stays published.
+	bool stayGated = false;
+	{
+		framelink::PoseSnapshot framePose;
+		if (frameLink.LatestPose(0, 0.3, framePose))
+		{
+			const double minConfidence = 0.5;
+			int trust = 0;
+			if (framePose.flags & framelink::PoseFlagInertialOnly) trust = 2;
+			else if (framePose.confidence < minConfidence)         trust = 1;
+			if (trust != 0) stayGated = true;
 
-	if (ev.jump)
-	{
-		if (ev.follow)
-			RebaseDrift(ev.J);
-		LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s",
-			stay::Deg(ev.J.yaw), vecNorm(ev.J.t) * 100.0, ev.T, ev.yawAfterDeg, ev.lambda,
-			ev.follow ? "followed (recenter)" : (ev.reverted ? "held, earlier hiccup reverted" : "held (hiccup)"));
+			bool firstTransition = frameLinkStayTrustState == -1;
+			if (trust != frameLinkStayTrustState && (firstTransition || nowSeconds - frameLinkStayTrustLogTime > 2.0))
+			{
+				frameLinkStayTrustLogTime = nowSeconds;
+				frameLinkStayTrustState = trust;
+				if (!firstTransition)
+				{
+					if (trust == 0)
+						LOG("Stay Aligned: Frame confidence restored (%.2f), resuming step updates", framePose.confidence);
+					else
+						LOG("Stay Aligned: Frame confidence %s (%.2f%s), holding correction",
+							trust == 2 ? "inertial-only" : "low", framePose.confidence,
+							(framePose.flags & framelink::PoseFlagInertialOnly) ? " — IMU coasting" : "");
+				}
+				else if (trust != 0)
+				{
+					LOG("Stay Aligned: first Frame pose %s (%.2f%s), holding correction",
+						trust == 2 ? "inertial-only" : "low confidence", framePose.confidence,
+						(framePose.flags & framelink::PoseFlagInertialOnly) ? " — IMU coasting" : "");
+				}
+			}
+		}
+		else if (frameLinkStayTrustState != -1 && frameLinkStayTrustState != 0
+		         && nowSeconds - frameLinkStayTrustLogTime > 2.0)
+		{
+			// Frame stream silent while gated — release the gate so we don't
+			// hold a stale correction forever.
+			frameLinkStayTrustLogTime = nowSeconds;
+			frameLinkStayTrustState = -1;
+		}
 	}
-	if (ev.rescueChecked)
-		LOG("Stay Aligned: alignment check after headset pause: hip mismatch %.1f cm, yaw mismatch %.1f deg, pose looked re-centred %s -> %s",
-			ev.rescueTransMisM * 100.0, ev.rescueYawMisDeg, ev.rescueCanonical ? "yes" : "no",
-			ev.rebase && ev.rebaseKind == 1 ? "re-aligned from the hip tracker" : "alignment kept");
-	if (ev.rebase)
+
+	if (!stayGated)
 	{
-		RebaseDrift(ev.K);
-		if (ev.rebaseKind == 2)
-			LOG("Stay Aligned: re-alignment settled (%.2f deg / %.1f cm folded in)", stay::Deg(ev.K.yaw), stay::NormH(ev.K.t) * 100.0);
+		stay::Event ev = stayAligner.step(hmdTime, rawRotation, vecFromArray(rawPosition), hip);
+
+		if (ev.jump)
+		{
+			if (ev.follow)
+				RebaseDrift(ev.J);
+			LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s",
+				stay::Deg(ev.J.yaw), vecNorm(ev.J.t) * 100.0, ev.T, ev.yawAfterDeg, ev.lambda,
+				ev.follow ? "followed (recenter)" : (ev.reverted ? "held, earlier hiccup reverted" : "held (hiccup)"));
+		}
+		if (ev.rescueChecked)
+			LOG("Stay Aligned: alignment check after headset pause: hip mismatch %.1f cm, yaw mismatch %.1f deg, pose looked re-centred %s -> %s",
+				ev.rescueTransMisM * 100.0, ev.rescueYawMisDeg, ev.rescueCanonical ? "yes" : "no",
+				ev.rebase && ev.rebaseKind == 1 ? "re-aligned from the hip tracker" : "alignment kept");
+		if (ev.rebase)
+		{
+			RebaseDrift(ev.K);
+			if (ev.rebaseKind == 2)
+				LOG("Stay Aligned: re-alignment settled (%.2f deg / %.1f cm folded in)", stay::Deg(ev.K.yaw), stay::NormH(ev.K.t) * 100.0);
+		}
 	}
 
 	const stay::Frame& c = stayAligner.correction();
@@ -1265,11 +1316,29 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					if (frameLink.NextRelocalize(frameLinkRelocSeq, relocEv, relocSeq))
 					{
 						lastHmdJumpTime = nowSeconds;
-						double shift = std::sqrt(
-							relocEv.translation[0] * relocEv.translation[0] +
-							relocEv.translation[1] * relocEv.translation[1] +
-							relocEv.translation[2] * relocEv.translation[2]);
-						LOG("Frame relocalization seq=%u, shift %.3f m — marking HMD jump", relocSeq, shift);
+
+						// Convert the Frame's wxyz rotation delta to a yaw (rad) and its
+						// translation to the HmdVector3d_t stay::Frame expects. The
+						// Frame reports shift in its own SLAM space, which is the same
+						// frame the stayAligner lives in, so no additional rotation.
+						double qw = relocEv.rotation[0], qx = relocEv.rotation[1];
+						double qy = relocEv.rotation[2], qz = relocEv.rotation[3];
+						double yaw = std::atan2(2.0 * (qw * qy + qz * qx),
+						                        1.0 - 2.0 * (qx * qx + qy * qy));
+						vr::HmdVector3d_t trans = {
+							(double)relocEv.translation[0],
+							(double)relocEv.translation[1],
+							(double)relocEv.translation[2],
+						};
+						double shiftM = vecNorm(trans);
+
+						if (stayRunning)
+							stayAligner.externalShift(hmdTime, stay::Frame{ yaw, trans });
+						clock.noteHmdDiscontinuity();
+
+						LOG("Frame relocalization seq=%u, shift %.3f m / %.1f deg — fed to %sclock",
+							relocSeq, shiftM, yaw * 180.0 / POSE_PI,
+							stayRunning ? "Stay Aligned + " : "");
 					}
 
 					if (freshPose && DetectHmdKinematicJump(pose, rawRotation, rawPosition, hmdTime))
