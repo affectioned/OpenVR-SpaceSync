@@ -303,6 +303,42 @@ int main(int argc, char **argv)
         std::printf("ok: relocalize event -> HMD jump (first, no-repeat, stacked latest-wins, old-seq rejected)\n");
     }
 
+    // -- Stay Aligned gate uses the same policy with its own trust state ---
+    // Mirrors StayAlignedStep's gate block exactly.
+    {
+        DriftGate stayGate;
+        double t = 20.0;
+
+        // Hi-conf first tick -> baseline, no log, usable stays true, no gate.
+        SendPose(1000, 0.95f, framelink::PoseFlagPositionTracked | framelink::PoseFlagRotationTracked, port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        {
+            framelink::PoseSnapshot s; bool have = L.LatestPose(0, 0.3, s);
+            bool usable = true;
+            int beforeLog = stayGate.logCount;
+            stayGate.tick(t, have, s, usable);
+            CHECK(have); CHECK(usable);
+            CHECK(stayGate.trustState == 0);
+            CHECK(stayGate.logCount == beforeLog);  // baseline suppresses log
+        }
+        t += 3.0;
+
+        // Inertial-only -> would gate StayAligned.step() calls
+        SendPose(1001, 0.99f, framelink::PoseFlagInertialOnly, port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        {
+            framelink::PoseSnapshot s; bool have = L.LatestPose(0, 0.3, s);
+            bool usable = true;
+            int beforeLog = stayGate.logCount;
+            stayGate.tick(t, have, s, usable);
+            CHECK(!usable);  // step() would be skipped
+            CHECK(stayGate.trustState == 2);
+            CHECK(stayGate.logCount == beforeLog + 1);
+        }
+
+        std::printf("ok: Stay Aligned gate — baseline silent, inertial-only triggers gate + log\n");
+    }
+
     L.Stop();
     std::printf("\nframelink background tests passed\n");
     return 0;

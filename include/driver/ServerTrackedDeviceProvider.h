@@ -129,6 +129,8 @@ private:
 	uint32_t frameLinkRelocSeq = 0;      // highest MsgRelocalize.sequence we've consumed
 	int frameLinkTrustState = -1;        // -1=unknown, 0=trusted, 1=low-conf, 2=inertial
 	double frameLinkTrustLogTime = 0.0;
+	int frameLinkStayTrustState = -1;    // same shape as above, but for the Stay Aligned path
+	double frameLinkStayTrustLogTime = 0.0;
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };
