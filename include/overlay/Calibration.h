@@ -81,6 +81,7 @@ struct CalibrationContext
 	int dynamicPowerMode = 0;
 	bool basestationManagement = true;
 	bool allowSameSpaceCalibration = false;
+	bool lockRotationToGravity = true;
 	bool disableVoiceHelp = false;
 	int language = 0;
 

@@ -264,6 +264,43 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 
 	snprintf(buf, sizeof buf, "Calibrated rotation: yaw=%.2f pitch=%.2f roll=%.2f\n", euler[1], euler[2], euler[0]);
 	CalCtx.Log(buf);
+
+	// Gravity-constrained post-projection. SteamVR's world frame puts gravity
+	// on +Y; both the reference driver's and the target driver's absolute
+	// tracking spaces carry Y = up when their room setup / standing zero
+	// pose is correct. The rotation between those two spaces should
+	// therefore be yaw-only.
+	//
+	// We treat small pitch/roll in the Kabsch solution as sample-noise
+	// bleed and snap it to 0 (yaw-only); larger pitch/roll usually means
+	// one driver's gravity is miscalibrated and the whole fit is suspect,
+	// so we keep the 3-DOF solution and log a warning instead.
+	//
+	// The signal comes from the public openvr.h / IVRChaperoneSetup
+	// convention — no reverse engineering is needed to read world-up from
+	// each driver. See docs/steamvr-re-session.md §4.1.
+	if (CalCtx.lockRotationToGravity)
+	{
+		double pitch = euler[2], roll = euler[0];
+		const double nearGravityDeg = 3.0;
+		if (std::fabs(pitch) < nearGravityDeg && std::fabs(roll) < nearGravityDeg)
+		{
+			snprintf(buf, sizeof buf,
+				"Rotation locked to gravity: pitch %.2f deg and roll %.2f deg absorbed as sample noise, yaw=%.2f deg kept\n",
+				pitch, roll, euler[1]);
+			CalCtx.Log(buf);
+			euler[0] = 0.0;
+			euler[2] = 0.0;
+		}
+		else
+		{
+			snprintf(buf, sizeof buf,
+				"Gravity-lock skipped: pitch %.2f deg or roll %.2f deg is too large to be noise; keeping 3-DOF rotation. If the fit is poor, re-run SteamVR room setup on both drivers so their standing zero poses agree with gravity.\n",
+				pitch, roll);
+			CalCtx.Log(buf);
+		}
+	}
+
 	return euler;
 }
 
