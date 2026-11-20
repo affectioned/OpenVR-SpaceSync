@@ -82,9 +82,11 @@ namespace universe
 			if (now - lastUniverseCheck < 1.0)
 				return lastUniverseId;
 			lastUniverseCheck = now;
+			vr::PropertyContainerHandle_t container =
+				vr::VRProperties()->TrackedDeviceToPropertyContainer(hmdId);
 			vr::ETrackedPropertyError err = vr::TrackedProp_Success;
-			uint64_t current = vr::VRSystem()->GetUint64TrackedDeviceProperty(
-				hmdId, vr::Prop_CurrentUniverseId_Uint64, &err);
+			uint64_t current = vr::VRProperties()->GetUint64Property(
+				container, vr::Prop_CurrentUniverseId_Uint64, &err);
 			if (err != vr::TrackedProp_Success)
 				return lastUniverseId;
 
