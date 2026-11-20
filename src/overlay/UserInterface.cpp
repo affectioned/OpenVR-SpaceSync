@@ -639,6 +639,36 @@ void UserInterface::RenderCalibration(const Status& status)
 			ImGui::SetCursorScreenPos(ImVec2(c.x - ts.x * 0.5f, ImGui::GetCursorScreenPos().y));
 			Text(F.regular, 12.5f, P.yellow, line);
 		}
+
+		// Continuous recalibration section — shown when enabled, so the user
+		// can see it working (or being blocked) without digging through logs.
+		if (CalCtx.continuousRecal)
+		{
+			VSpace(12.0f);
+			ImGui::SetCursorScreenPos(ImVec2(px0, ImGui::GetCursorScreenPos().y));
+			Text(F.semibold, 12.5f, P.textMuted, loc::tr("Continuous recalibration"));
+			VSpace(4.0f);
+
+			std::snprintf(buf, sizeof buf, "%u applied / %u rejected / %u attempted",
+				CalCtx.continuousRecalApplied, CalCtx.continuousRecalRejected, CalCtx.continuousRecalAttempted);
+			unsigned col = CalCtx.continuousRecalRejected > CalCtx.continuousRecalApplied ? P.yellow : P.textStrong;
+			row(loc::tr("Cycles"), buf, col);
+
+			if (CalCtx.continuousRecalAttempted > 0)
+			{
+				std::snprintf(buf, sizeof buf, "%+.2f deg / %.1f cm",
+					CalCtx.continuousRecalLastYawDeltaDeg, CalCtx.continuousRecalLastTransDeltaM * 100.0);
+				row(loc::tr("Last proposed shift"), buf, P.textDim);
+			}
+
+			double now = ImGui::GetTime();
+			double until = CalCtx.continuousRecalIntervalSeconds - (now - CalCtx.continuousRecalTimeLast);
+			if (until < 0.0) until = 0.0;
+			int mm = (int)(until / 60.0);
+			int ss = (int)until % 60;
+			std::snprintf(buf, sizeof buf, "%d:%02d", mm, ss);
+			row(loc::tr("Next check in"), buf, P.textStrong);
+		}
 	}
 
 	if (calibrated && CalCtx.driverStatus.mountShiftSuspected)
@@ -1549,6 +1579,10 @@ void UserInterface::RenderSettings()
 	if (CheckboxRow("Lock Rotation to Gravity",
 		"After calibration, if the fitted pitch and roll are small (<3 deg) the rotation is snapped to yaw-only. SteamVR's world frame has gravity on +Y on both drivers, so tiny pitch/roll is almost always sample noise and removing it makes alignment steadier. If a driver's room setup is actually tilted, the snap is skipped and the full 3-DOF rotation is kept.",
 		&CalCtx.lockRotationToGravity, colW) && CalCtx.validProfile)
+		SaveProfile(CalCtx);
+	if (CheckboxRow("Continuous Recalibration",
+		"Experimental. Every 5 minutes (while calibration is settled and both devices track OK) run the calibration solver on recent live poses and apply the result IF it would only shift yaw by <2 deg and translation by <5 cm. Larger drifts are rejected and logged — manual recalibration is still needed. Off by default.",
+		&CalCtx.continuousRecal, colW) && CalCtx.validProfile)
 		SaveProfile(CalCtx);
 	CheckboxRow("Relative Calibration",
 		"Continuously re-aligns SLAM-tracked devices (controllers etc.) to the calibrated space by comparing the headset's SLAM pose with the tracker-driven pose.",

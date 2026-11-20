@@ -11,6 +11,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <iostream>
 #include <algorithm>
 #include <cctype>
@@ -244,6 +245,32 @@ DSample DeltaRotationSamples(Sample s1, Sample s2)
 	return ds;
 }
 
+// One weighted-Kabsch pass. Shared between the first solve and the
+// IRLS refinement passes below.
+static Eigen::Matrix3d SolveKabschWeighted(const std::vector<DSample>& deltas,
+                                           const std::vector<double>& weights)
+{
+	Eigen::MatrixXd refPoints(deltas.size(), 3), targetPoints(deltas.size(), 3);
+	for (size_t i = 0; i < deltas.size(); i++)
+	{
+		double s = std::sqrt((std::max)(0.0, weights[i]));
+		refPoints.row(i) = s * deltas[i].ref;
+		targetPoints.row(i) = s * deltas[i].target;
+	}
+	auto crossCV = refPoints.transpose() * targetPoints;
+
+	Eigen::BDCSVD<Eigen::MatrixXd> bdcsvd;
+	auto svd = bdcsvd.compute(crossCV, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+	Eigen::Matrix3d flip = Eigen::Matrix3d::Identity();
+	if ((svd.matrixU() * svd.matrixV().transpose()).determinant() < 0)
+		flip(2, 2) = -1;
+
+	Eigen::Matrix3d rot = svd.matrixV() * flip * svd.matrixU().transpose();
+	rot.transposeInPlace();
+	return rot;
+}
+
 Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 {
 	std::vector<DSample> deltas;
@@ -263,32 +290,83 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 	char buf[256];
 	snprintf(buf, sizeof buf, "Got %zd samples with %zd delta samples\n", samples.size(), deltas.size());
 	CalCtx.Log(buf);
-	Eigen::MatrixXd refPoints(deltas.size(), 3), targetPoints(deltas.size(), 3);
 
-	// Weighted Kabsch: scaling ref/target rows by sqrt(w) makes the
-	// cross-covariance H = refPoints^T * targetPoints into the correctly
-	// weighted covariance sum(w_i * ref_i * target_i^T). Falls back to
-	// unweighted when no Frame data is used, since PairWeight returns 1 then.
+	// Start from the Frame-confidence prior as weights. Falls back to all-1s
+	// when no Frame data is used, because PairWeight returns 1 then.
+	std::vector<double> weights(deltas.size());
 	for (size_t i = 0; i < deltas.size(); i++)
+		weights[i] = deltas[i].weight;
+
+	Eigen::Matrix3d rot = SolveKabschWeighted(deltas, weights);
+
+	// IRLS (iterative reweighted least squares) refinement. Each iteration
+	// computes the per-delta residual angle between (rot * target) and ref
+	// in rotation-vector space, then down-weights outliers with a Cauchy
+	// kernel: w' = w_prior / (1 + (residual / scale)^2). The Frame
+	// confidence stays baked in as the prior so a low-confidence sample
+	// can't suddenly earn full weight just because this iteration's
+	// residual is small. scale tracks the sample set — 2*MAD, floored at
+	// 1 deg so we never over-reject on a tight fit.
+	//
+	// Three iterations is where convergence has flattened on our test
+	// captures; a fourth rarely moves the rotation more than 0.01 deg.
+	auto rotationVector = [](const Eigen::Matrix3d& m) {
+		Eigen::AngleAxisd aa(m);
+		return aa.axis() * aa.angle();
+	};
+
+	double initialRms = 0.0, finalRms = 0.0;
+	double scaleUsed = 0.0;
+	int downWeighted = 0, rejected = 0;
+	for (int iter = 0; iter < 3; iter++)
 	{
-		double s = std::sqrt(deltas[i].weight);
-		refPoints.row(i) = s * deltas[i].ref;
-		targetPoints.row(i) = s * deltas[i].target;
+		std::vector<double> residuals(deltas.size());
+		for (size_t k = 0; k < deltas.size(); k++)
+		{
+			Eigen::Vector3d targetInRef = rot * deltas[k].target;
+			Eigen::Vector3d diff = deltas[k].ref - targetInRef;
+			residuals[k] = diff.norm();
+		}
+
+		double sumSq = 0.0;
+		for (double r : residuals)
+			sumSq += r * r;
+		double rms = deltas.empty() ? 0.0 : std::sqrt(sumSq / deltas.size());
+		if (iter == 0)
+			initialRms = rms;
+		finalRms = rms;
+
+		std::vector<double> sorted = residuals;
+		std::sort(sorted.begin(), sorted.end());
+		double median = sorted.empty() ? 0.0 : sorted[sorted.size() / 2];
+		std::vector<double> absDev(sorted.size());
+		for (size_t k = 0; k < sorted.size(); k++)
+			absDev[k] = std::fabs(sorted[k] - median);
+		std::sort(absDev.begin(), absDev.end());
+		double mad = absDev.empty() ? 0.0 : absDev[absDev.size() / 2];
+		const double minScale = 1.0 * EIGEN_PI / 180.0;
+		double scale = (std::max)(2.0 * mad, minScale);
+		scaleUsed = scale;
+
+		downWeighted = 0;
+		rejected = 0;
+		for (size_t k = 0; k < deltas.size(); k++)
+		{
+			double r = residuals[k] / scale;
+			double robust = 1.0 / (1.0 + r * r);
+			weights[k] = deltas[k].weight * robust;
+			if (robust < 0.5) downWeighted++;
+			if (robust < 0.1) rejected++;
+		}
+
+		rot = SolveKabschWeighted(deltas, weights);
 	}
 
-	auto crossCV = refPoints.transpose() * targetPoints;
-
-	Eigen::BDCSVD<Eigen::MatrixXd> bdcsvd;
-	auto svd = bdcsvd.compute(crossCV, Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-	Eigen::Matrix3d i = Eigen::Matrix3d::Identity();
-	if ((svd.matrixU() * svd.matrixV().transpose()).determinant() < 0)
-	{
-		i(2, 2) = -1;
-	}
-
-	Eigen::Matrix3d rot = svd.matrixV() * i * svd.matrixU().transpose();
-	rot.transposeInPlace();
+	snprintf(buf, sizeof buf,
+		"IRLS: residual RMS %.3f -> %.3f deg over 3 iterations, Cauchy scale %.2f deg, %d deltas down-weighted (%d effectively rejected) out of %zd\n",
+		initialRms * 180.0 / EIGEN_PI, finalRms * 180.0 / EIGEN_PI,
+		scaleUsed * 180.0 / EIGEN_PI, downWeighted, rejected, deltas.size());
+	CalCtx.Log(buf);
 
 	Eigen::Vector3d euler = rot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI;
 
@@ -1639,6 +1717,107 @@ static void UpdateCalibrationSounds(CalibrationContext &ctx)
 	lastState = ctx.state;
 }
 
+static std::deque<Sample> g_contRecalBuf;
+
+static Eigen::Matrix3d EulerDegToMatrix(const Eigen::Vector3d& eulerDeg)
+{
+	Eigen::Vector3d r = eulerDeg * EIGEN_PI / 180.0;
+	return (Eigen::AngleAxisd(r(0), Eigen::Vector3d::UnitZ()) *
+	        Eigen::AngleAxisd(r(1), Eigen::Vector3d::UnitY()) *
+	        Eigen::AngleAxisd(r(2), Eigen::Vector3d::UnitX())).toRotationMatrix();
+}
+
+static double WrapYawDelta(double degA, double degB)
+{
+	double d = degA - degB;
+	while (d > 180.0) d -= 360.0;
+	while (d < -180.0) d += 360.0;
+	return d;
+}
+
+// Continuous recalibration — opt-in, slow, hard-bounded. Keeps a rolling
+// buffer of live HMD + target pose pairs while calibration is settled; at
+// the configured interval, runs the Kabsch + translation solve on that
+// buffer and swaps in the new calibration *only* when the proposed shift
+// is smaller than the user-configured safety bounds. That gate is the
+// whole point: if the fit wanders more than a couple of degrees or a
+// few centimetres in one window, something changed that deserves a
+// manual recalibration — silently absorbing it would hide the problem.
+//
+// Only runs when state == None and the previous calibration was good.
+// Resets its own buffer on calibration-state changes so the next window
+// starts from a clean slate.
+static void TryContinuousRecal(CalibrationContext& ctx, double time)
+{
+	if (!ctx.continuousRecal || ctx.state != CalibrationState::None)
+	{
+		if (!g_contRecalBuf.empty() && ctx.state != CalibrationState::None)
+			g_contRecalBuf.clear();
+		return;
+	}
+	if (!ctx.lastCalibrationOk) return;
+	if (ctx.targetID >= vr::k_unMaxTrackedDeviceCount) return;
+
+	auto& hp = ctx.devicePoses[vr::k_unTrackedDeviceIndex_Hmd];
+	auto& tp = ctx.devicePoses[ctx.targetID];
+	if (!hp.bPoseIsValid || !tp.bPoseIsValid) return;
+	if (hp.eTrackingResult != vr::TrackingResult_Running_OK) return;
+	if (tp.eTrackingResult != vr::TrackingResult_Running_OK) return;
+
+	double sampleDt = 1.0 / (ctx.continuousRecalSampleHz > 1.0 ? ctx.continuousRecalSampleHz : 10.0);
+	if (time - ctx.continuousRecalTimeLastSample >= sampleDt)
+	{
+		ctx.continuousRecalTimeLastSample = time;
+		Sample s(Pose(hp.mDeviceToAbsoluteTracking), Pose(tp.mDeviceToAbsoluteTracking));
+		s.time = time;
+		g_contRecalBuf.push_back(s);
+		while (g_contRecalBuf.size() > ctx.continuousRecalBufferMax)
+			g_contRecalBuf.pop_front();
+	}
+
+	if (time - ctx.continuousRecalTimeLast < ctx.continuousRecalIntervalSeconds) return;
+	if (g_contRecalBuf.size() < 100) return;
+
+	ctx.continuousRecalTimeLast = time;
+	ctx.continuousRecalAttempted++;
+
+	std::vector<Sample> samples(g_contRecalBuf.begin(), g_contRecalBuf.end());
+
+	Eigen::Vector3d candidateRot = CalibrateRotation(samples);
+	Eigen::Matrix3d candidateRotMat = EulerDegToMatrix(candidateRot);
+	Eigen::Vector3d candidateTrans = CalibrateTranslation(samples, candidateRotMat, ctx.calibratedScale);
+
+	double yawDelta = WrapYawDelta(candidateRot[1], ctx.calibratedRotation[1]);
+	double transDeltaM = (candidateTrans - ctx.calibratedTranslation).norm() * 0.01;
+	ctx.continuousRecalLastYawDeltaDeg = std::fabs(yawDelta);
+	ctx.continuousRecalLastTransDeltaM = transDeltaM;
+
+	char buf[256];
+	if (std::fabs(yawDelta) > ctx.continuousRecalMaxYawDeltaDeg ||
+	    transDeltaM > ctx.continuousRecalMaxTransDeltaM)
+	{
+		ctx.continuousRecalRejected++;
+		snprintf(buf, sizeof buf,
+			"Continuous recal rejected: proposed shift %+.2f deg yaw / %.1f cm translation exceeds safety bounds (%.1f deg / %.1f cm). A manual recalibration may be needed.\n",
+			yawDelta, transDeltaM * 100.0,
+			ctx.continuousRecalMaxYawDeltaDeg, ctx.continuousRecalMaxTransDeltaM * 100.0);
+		CalCtx.Log(buf);
+		return;
+	}
+
+	ctx.calibratedRotation = candidateRot;
+	ctx.calibratedTranslation = candidateTrans;
+	SendHmdTrackerCommand(vr::k_unTrackedDeviceIndex_Hmd, ctx.targetID, true);
+	SaveProfile(ctx);
+	ctx.continuousRecalApplied++;
+
+	snprintf(buf, sizeof buf,
+		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm (#%u applied, %u rejected, %u attempted)\n",
+		yawDelta, transDeltaM * 100.0,
+		ctx.continuousRecalApplied, ctx.continuousRecalRejected, ctx.continuousRecalAttempted);
+	CalCtx.Log(buf);
+}
+
 void CalibrationTick(double time)
 {
 	if (!vr::VRSystem())
@@ -1660,6 +1839,7 @@ void CalibrationTick(double time)
 	vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseRawAndUncalibrated, 0.0f, ctx.devicePoses, vr::k_unMaxTrackedDeviceCount);
 	UpdateSequenceStep(ctx, time);
 	UpdateCalibrationSounds(ctx);
+	TryContinuousRecal(ctx, time);
 
 	if (ctx.state == CalibrationState::None)
 	{

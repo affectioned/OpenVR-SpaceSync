@@ -156,6 +156,20 @@ static void ParseProfile(CalibrationContext &ctx, std::istream &stream)
 	else
 		ctx.lockRotationToGravity = true;
 
+	if (obj["continuousRecal"].is<bool>())
+		ctx.continuousRecal = obj["continuousRecal"].get<bool>();
+	else
+		ctx.continuousRecal = false;
+
+	if (obj["continuousRecalInterval"].is<double>())
+	{
+		ctx.continuousRecalIntervalSeconds = obj["continuousRecalInterval"].get<double>();
+		if (ctx.continuousRecalIntervalSeconds < 30.0) ctx.continuousRecalIntervalSeconds = 30.0;
+		if (ctx.continuousRecalIntervalSeconds > 3600.0) ctx.continuousRecalIntervalSeconds = 3600.0;
+	}
+	else
+		ctx.continuousRecalIntervalSeconds = 300.0;
+
 	if (obj["lhSmoothing"].is<double>())
 	{
 		ctx.lighthouseSmoothing = obj["lhSmoothing"].get<double>();
@@ -344,6 +358,8 @@ static void WriteProfile(CalibrationContext &ctx, std::ostream &out)
 	profile["useFrameLink"].set<bool>(ctx.useFrameLink);
 	profile["frameLinkMinConfidence"].set<double>(ctx.frameLinkMinConfidence);
 	profile["lockRotToGravity"].set<bool>(ctx.lockRotationToGravity);
+	profile["continuousRecal"].set<bool>(ctx.continuousRecal);
+	profile["continuousRecalInterval"].set<double>(ctx.continuousRecalIntervalSeconds);
 	double lhSmoothing = ctx.lighthouseSmoothing;
 	profile["lhSmoothing"].set<double>(lhSmoothing);
 	double latencyComp = ctx.latencyCompensation;
