@@ -575,6 +575,72 @@ void UserInterface::RenderCalibration(const Status& status)
 	if (Button("Remove Calibration", remove))
 		confirmRemove_ = true;
 
+	// Calibration quality panel. Only shown once the driver has a valid drift
+	// measurement to report — otherwise the numbers are meaningless. Surfaces
+	// the live sigmas that the driver already carries in DriverStatus but the
+	// overlay never showed, so users can tell when their calibration has
+	// silently gone stale and recalibration would help.
+	if (calibrated && CalCtx.driverStatus.driftValid)
+	{
+		const auto& st = CalCtx.driverStatus;
+
+		// Degradation thresholds: above these the solve is noisy enough that
+		// a fresh calibration will likely do better. Values picked from
+		// observed clean-run baselines (<0.5 deg sigma, <0.5 cm sigma).
+		const double yawWarnDeg   = 1.0;
+		const double yawBadDeg    = 2.0;
+		const double transWarnM   = 0.010;
+		const double transBadM    = 0.020;
+
+		auto qualityColor = [](double v, double warn, double bad) {
+			if (v >= bad) return P.danger;
+			if (v >= warn) return P.yellow;
+			return P.green;
+		};
+
+		VSpace(18.0f);
+		const float panelW = px(360.0f);
+		float px0 = c.x - panelW * 0.5f;
+
+		ImGui::SetCursorScreenPos(ImVec2(px0, ImGui::GetCursorScreenPos().y));
+		Text(F.semibold, 13.0f, P.textMuted, loc::tr("Calibration quality"));
+		VSpace(6.0f);
+
+		char buf[96];
+		auto row = [&](const char* label, const char* valueStr, unsigned valueCol) {
+			ImGui::SetCursorScreenPos(ImVec2(px0, ImGui::GetCursorScreenPos().y));
+			Text(F.regular, 12.5f, P.textDim, label);
+			ImGui::SameLine();
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(140.0f) - ImGui::CalcTextSize(label).x - px(8.0f));
+			Text(F.mono, 12.0f, valueCol, valueStr);
+		};
+
+		std::snprintf(buf, sizeof buf, "%.2f deg", st.sigmaYawDeg);
+		row(loc::tr("Yaw sigma"), buf, qualityColor(st.sigmaYawDeg, yawWarnDeg, yawBadDeg));
+
+		std::snprintf(buf, sizeof buf, "%.1f mm", st.sigmaTranslationM * 1000.0);
+		row(loc::tr("Translation sigma"), buf, qualityColor(st.sigmaTranslationM, transWarnM, transBadM));
+
+		std::snprintf(buf, sizeof buf, "%u", st.jumpsCompensated);
+		row(loc::tr("Jumps compensated"), buf, st.jumpsCompensated > 10 ? P.yellow : P.textStrong);
+
+		if (st.refinementSolves > 0)
+		{
+			std::snprintf(buf, sizeof buf, "%u", st.refinementSolves);
+			row(loc::tr("Refinement solves"), buf, P.textStrong);
+		}
+
+		// Recommendation chip when quality is clearly degraded.
+		if (st.sigmaYawDeg >= yawBadDeg || st.sigmaTranslationM >= transBadM)
+		{
+			VSpace(10.0f);
+			const char* line = loc::tr("Alignment noise is growing — a fresh calibration would help.");
+			ImVec2 ts = TextSize(F.regular, 12.5f, line);
+			ImGui::SetCursorScreenPos(ImVec2(c.x - ts.x * 0.5f, ImGui::GetCursorScreenPos().y));
+			Text(F.regular, 12.5f, P.yellow, line);
+		}
+	}
+
 	if (calibrated && CalCtx.driverStatus.mountShiftSuspected)
 	{
 		VSpace(18.0f);
