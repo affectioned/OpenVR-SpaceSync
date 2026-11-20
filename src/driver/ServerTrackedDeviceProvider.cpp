@@ -1675,6 +1675,10 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 						refineTauRot = tauRotNow;
 						refineTauPos = tauPosNow;
 					}
+					// `usable` is the shared gate initialised earlier for drift updates.
+					// The Steam Frame confidence check (issue #18) already clears it
+					// when the Frame reports low confidence / inertial-only, so
+					// MountRefiner inherits that protection without a separate gate.
 					if (usable && drift.valid && confidence > 0.5 && clock.rot.primed && clock.pos.primed)
 					{
 						vr::HmdQuaternion_t invTiltRef = quaternionConjugate(worldTilt);
