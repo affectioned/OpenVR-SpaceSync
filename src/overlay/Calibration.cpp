@@ -71,7 +71,23 @@ struct DSample
 {
 	bool valid;
 	Eigen::Vector3d ref, target;
+	// Per-pair weight used by the weighted-Kabsch solver. Defaults to 1 so
+	// callers that don't fill it get the unweighted behaviour.
+	double weight = 1.0;
 };
+
+// Joint confidence of a pair of samples. Clamps to a small floor so a single
+// low-confidence sample can still contribute instead of being erased from
+// the solve, which would waste the motion variety it captured.
+static double PairWeight(const Sample& a, const Sample& b)
+{
+	auto w = [](const Sample& s) {
+		if (!s.frameLinkUsed) return 1.0;
+		const double floor_ = 0.1;
+		return s.frameConfidence > floor_ ? s.frameConfidence : floor_;
+	};
+	return std::sqrt(w(a) * w(b));
+}
 
 bool StartsWith(const std::string &str, const std::string &prefix)
 {
@@ -238,7 +254,10 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 		{
 			auto delta = DeltaRotationSamples(samples[i], samples[j]);
 			if (delta.valid)
+			{
+				delta.weight = PairWeight(samples[i], samples[j]);
 				deltas.push_back(delta);
+			}
 		}
 	}
 	char buf[256];
@@ -246,10 +265,15 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 	CalCtx.Log(buf);
 	Eigen::MatrixXd refPoints(deltas.size(), 3), targetPoints(deltas.size(), 3);
 
+	// Weighted Kabsch: scaling ref/target rows by sqrt(w) makes the
+	// cross-covariance H = refPoints^T * targetPoints into the correctly
+	// weighted covariance sum(w_i * ref_i * target_i^T). Falls back to
+	// unweighted when no Frame data is used, since PairWeight returns 1 then.
 	for (size_t i = 0; i < deltas.size(); i++)
 	{
-		refPoints.row(i) = deltas[i].ref;
-		targetPoints.row(i) = deltas[i].target;
+		double s = std::sqrt(deltas[i].weight);
+		refPoints.row(i) = s * deltas[i].ref;
+		targetPoints.row(i) = s * deltas[i].target;
 	}
 
 	auto crossCV = refPoints.transpose() * targetPoints;
@@ -279,7 +303,11 @@ static const double MaxCalibratedScale = 1.03;
 
 static Eigen::Vector3d SolveTranslation(const std::vector<Sample>& samples, const Eigen::Matrix3d& rotation, double scale)
 {
-	std::vector<std::pair<Eigen::Vector3d, Eigen::Matrix3d>> deltas;
+	// Each (b, A) pair gets a joint weight derived from the two source
+	// samples' Frame confidences. When no Frame data is used (PairWeight
+	// returns 1), this reduces to the unweighted least squares the solver
+	// has always run.
+	std::vector<std::tuple<Eigen::Vector3d, Eigen::Matrix3d, double>> deltas;
 
 	for (size_t i = 0; i < samples.size(); i++)
 	{
@@ -293,17 +321,19 @@ static Eigen::Vector3d SolveTranslation(const std::vector<Sample>& samples, cons
 			s_j.target.rot = rotation * s_j.target.rot;
 			s_j.target.trans = scale * (rotation * s_j.target.trans);
 
+			double w = PairWeight(samples[i], samples[j]);
+
 			auto QAi = s_i.ref.rot.transpose();
 			auto QAj = s_j.ref.rot.transpose();
-			auto dQA = QAj - QAi;
-			auto CA = QAj * (s_j.ref.trans - s_j.target.trans) - QAi * (s_i.ref.trans - s_i.target.trans);
-			deltas.push_back(std::make_pair(CA, dQA));
+			Eigen::Matrix3d dQA = QAj - QAi;
+			Eigen::Vector3d CA = QAj * (s_j.ref.trans - s_j.target.trans) - QAi * (s_i.ref.trans - s_i.target.trans);
+			deltas.emplace_back(CA, dQA, w);
 
 			auto QBi = s_i.target.rot.transpose();
 			auto QBj = s_j.target.rot.transpose();
-			auto dQB = QBj - QBi;
-			auto CB = QBj * (s_j.ref.trans - s_j.target.trans) - QBi * (s_i.ref.trans - s_i.target.trans);
-			deltas.push_back(std::make_pair(CB, dQB));
+			Eigen::Matrix3d dQB = QBj - QBi;
+			Eigen::Vector3d CB = QBj * (s_j.ref.trans - s_j.target.trans) - QBi * (s_i.ref.trans - s_i.target.trans);
+			deltas.emplace_back(CB, dQB, w);
 		}
 	}
 
@@ -312,10 +342,13 @@ static Eigen::Vector3d SolveTranslation(const std::vector<Sample>& samples, cons
 
 	for (size_t i = 0; i < deltas.size(); i++)
 	{
+		double s = std::sqrt(std::get<2>(deltas[i]));
+		const Eigen::Vector3d& bi = std::get<0>(deltas[i]);
+		const Eigen::Matrix3d& Ai = std::get<1>(deltas[i]);
 		for (int axis = 0; axis < 3; axis++)
 		{
-			constants(i * 3 + axis) = deltas[i].first(axis);
-			coefficients.row(i * 3 + axis) = deltas[i].second.row(axis);
+			constants(i * 3 + axis) = s * bi(axis);
+			coefficients.row(i * 3 + axis) = s * Ai.row(axis);
 		}
 	}
 
