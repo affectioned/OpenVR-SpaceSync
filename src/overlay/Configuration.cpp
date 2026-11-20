@@ -151,6 +151,11 @@ static void ParseProfile(CalibrationContext &ctx, std::istream &stream)
 	else
 		ctx.frameLinkMinConfidence = 0.5;
 
+	if (obj["lockRotToGravity"].is<bool>())
+		ctx.lockRotationToGravity = obj["lockRotToGravity"].get<bool>();
+	else
+		ctx.lockRotationToGravity = true;
+
 	if (obj["lhSmoothing"].is<double>())
 	{
 		ctx.lighthouseSmoothing = obj["lhSmoothing"].get<double>();
@@ -338,6 +343,7 @@ static void WriteProfile(CalibrationContext &ctx, std::ostream &out)
 	profile["allowSameSpaceCal"].set<bool>(ctx.allowSameSpaceCalibration);
 	profile["useFrameLink"].set<bool>(ctx.useFrameLink);
 	profile["frameLinkMinConfidence"].set<double>(ctx.frameLinkMinConfidence);
+	profile["lockRotToGravity"].set<bool>(ctx.lockRotationToGravity);
 	double lhSmoothing = ctx.lighthouseSmoothing;
 	profile["lhSmoothing"].set<double>(lhSmoothing);
 	double latencyComp = ctx.latencyCompensation;

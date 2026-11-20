@@ -90,6 +90,7 @@ struct CalibrationContext
 	// the Frame service isn't running.
 	bool useFrameLink = true;
 	double frameLinkMinConfidence = 0.5;
+	bool lockRotationToGravity = true;
 	bool disableVoiceHelp = false;
 	int language = 0;
 

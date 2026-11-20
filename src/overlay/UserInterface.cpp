@@ -1546,6 +1546,10 @@ void UserInterface::RenderSettings()
 		"Normally calibration requires the head tracker to come from a different tracking system than the headset. Turn this on if you want to use a lighthouse tracker as the head tracker for a lighthouse headset (e.g. Vive Tracker + Valve Index). Only enable this if you know what you are doing.",
 		&CalCtx.allowSameSpaceCalibration, colW))
 		SaveProfile(CalCtx);
+	if (CheckboxRow("Lock Rotation to Gravity",
+		"After calibration, if the fitted pitch and roll are small (<3 deg) the rotation is snapped to yaw-only. SteamVR's world frame has gravity on +Y on both drivers, so tiny pitch/roll is almost always sample noise and removing it makes alignment steadier. If a driver's room setup is actually tilted, the snap is skipped and the full 3-DOF rotation is kept.",
+		&CalCtx.lockRotationToGravity, colW) && CalCtx.validProfile)
+		SaveProfile(CalCtx);
 	CheckboxRow("Relative Calibration",
 		"Continuously re-aligns SLAM-tracked devices (controllers etc.) to the calibrated space by comparing the headset's SLAM pose with the tracker-driven pose.",
 		&CalCtx.continuousSync, colW);
