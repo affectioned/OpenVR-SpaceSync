@@ -11,6 +11,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <iostream>
 #include <algorithm>
 #include <cctype>
@@ -1716,6 +1717,107 @@ static void UpdateCalibrationSounds(CalibrationContext &ctx)
 	lastState = ctx.state;
 }
 
+static std::deque<Sample> g_contRecalBuf;
+
+static Eigen::Matrix3d EulerDegToMatrix(const Eigen::Vector3d& eulerDeg)
+{
+	Eigen::Vector3d r = eulerDeg * EIGEN_PI / 180.0;
+	return (Eigen::AngleAxisd(r(0), Eigen::Vector3d::UnitZ()) *
+	        Eigen::AngleAxisd(r(1), Eigen::Vector3d::UnitY()) *
+	        Eigen::AngleAxisd(r(2), Eigen::Vector3d::UnitX())).toRotationMatrix();
+}
+
+static double WrapYawDelta(double degA, double degB)
+{
+	double d = degA - degB;
+	while (d > 180.0) d -= 360.0;
+	while (d < -180.0) d += 360.0;
+	return d;
+}
+
+// Continuous recalibration — opt-in, slow, hard-bounded. Keeps a rolling
+// buffer of live HMD + target pose pairs while calibration is settled; at
+// the configured interval, runs the Kabsch + translation solve on that
+// buffer and swaps in the new calibration *only* when the proposed shift
+// is smaller than the user-configured safety bounds. That gate is the
+// whole point: if the fit wanders more than a couple of degrees or a
+// few centimetres in one window, something changed that deserves a
+// manual recalibration — silently absorbing it would hide the problem.
+//
+// Only runs when state == None and the previous calibration was good.
+// Resets its own buffer on calibration-state changes so the next window
+// starts from a clean slate.
+static void TryContinuousRecal(CalibrationContext& ctx, double time)
+{
+	if (!ctx.continuousRecal || ctx.state != CalibrationState::None)
+	{
+		if (!g_contRecalBuf.empty() && ctx.state != CalibrationState::None)
+			g_contRecalBuf.clear();
+		return;
+	}
+	if (!ctx.lastCalibrationOk) return;
+	if (ctx.targetID >= vr::k_unMaxTrackedDeviceCount) return;
+
+	auto& hp = ctx.devicePoses[vr::k_unTrackedDeviceIndex_Hmd];
+	auto& tp = ctx.devicePoses[ctx.targetID];
+	if (!hp.bPoseIsValid || !tp.bPoseIsValid) return;
+	if (hp.eTrackingResult != vr::TrackingResult_Running_OK) return;
+	if (tp.eTrackingResult != vr::TrackingResult_Running_OK) return;
+
+	double sampleDt = 1.0 / (ctx.continuousRecalSampleHz > 1.0 ? ctx.continuousRecalSampleHz : 10.0);
+	if (time - ctx.continuousRecalTimeLastSample >= sampleDt)
+	{
+		ctx.continuousRecalTimeLastSample = time;
+		Sample s(Pose(hp.mDeviceToAbsoluteTracking), Pose(tp.mDeviceToAbsoluteTracking));
+		s.time = time;
+		g_contRecalBuf.push_back(s);
+		while (g_contRecalBuf.size() > ctx.continuousRecalBufferMax)
+			g_contRecalBuf.pop_front();
+	}
+
+	if (time - ctx.continuousRecalTimeLast < ctx.continuousRecalIntervalSeconds) return;
+	if (g_contRecalBuf.size() < 100) return;
+
+	ctx.continuousRecalTimeLast = time;
+	ctx.continuousRecalAttempted++;
+
+	std::vector<Sample> samples(g_contRecalBuf.begin(), g_contRecalBuf.end());
+
+	Eigen::Vector3d candidateRot = CalibrateRotation(samples);
+	Eigen::Matrix3d candidateRotMat = EulerDegToMatrix(candidateRot);
+	Eigen::Vector3d candidateTrans = CalibrateTranslation(samples, candidateRotMat, ctx.calibratedScale);
+
+	double yawDelta = WrapYawDelta(candidateRot[1], ctx.calibratedRotation[1]);
+	double transDeltaM = (candidateTrans - ctx.calibratedTranslation).norm() * 0.01;
+	ctx.continuousRecalLastYawDeltaDeg = std::fabs(yawDelta);
+	ctx.continuousRecalLastTransDeltaM = transDeltaM;
+
+	char buf[256];
+	if (std::fabs(yawDelta) > ctx.continuousRecalMaxYawDeltaDeg ||
+	    transDeltaM > ctx.continuousRecalMaxTransDeltaM)
+	{
+		ctx.continuousRecalRejected++;
+		snprintf(buf, sizeof buf,
+			"Continuous recal rejected: proposed shift %+.2f deg yaw / %.1f cm translation exceeds safety bounds (%.1f deg / %.1f cm). A manual recalibration may be needed.\n",
+			yawDelta, transDeltaM * 100.0,
+			ctx.continuousRecalMaxYawDeltaDeg, ctx.continuousRecalMaxTransDeltaM * 100.0);
+		CalCtx.Log(buf);
+		return;
+	}
+
+	ctx.calibratedRotation = candidateRot;
+	ctx.calibratedTranslation = candidateTrans;
+	SendHmdTrackerCommand(vr::k_unTrackedDeviceIndex_Hmd, ctx.targetID, true);
+	SaveProfile(ctx);
+	ctx.continuousRecalApplied++;
+
+	snprintf(buf, sizeof buf,
+		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm (#%u applied, %u rejected, %u attempted)\n",
+		yawDelta, transDeltaM * 100.0,
+		ctx.continuousRecalApplied, ctx.continuousRecalRejected, ctx.continuousRecalAttempted);
+	CalCtx.Log(buf);
+}
+
 void CalibrationTick(double time)
 {
 	if (!vr::VRSystem())
@@ -1737,6 +1839,7 @@ void CalibrationTick(double time)
 	vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseRawAndUncalibrated, 0.0f, ctx.devicePoses, vr::k_unMaxTrackedDeviceCount);
 	UpdateSequenceStep(ctx, time);
 	UpdateCalibrationSounds(ctx);
+	TryContinuousRecal(ctx, time);
 
 	if (ctx.state == CalibrationState::None)
 	{
