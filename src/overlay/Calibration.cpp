@@ -244,6 +244,32 @@ DSample DeltaRotationSamples(Sample s1, Sample s2)
 	return ds;
 }
 
+// One weighted-Kabsch pass. Shared between the first solve and the
+// IRLS refinement passes below.
+static Eigen::Matrix3d SolveKabschWeighted(const std::vector<DSample>& deltas,
+                                           const std::vector<double>& weights)
+{
+	Eigen::MatrixXd refPoints(deltas.size(), 3), targetPoints(deltas.size(), 3);
+	for (size_t i = 0; i < deltas.size(); i++)
+	{
+		double s = std::sqrt((std::max)(0.0, weights[i]));
+		refPoints.row(i) = s * deltas[i].ref;
+		targetPoints.row(i) = s * deltas[i].target;
+	}
+	auto crossCV = refPoints.transpose() * targetPoints;
+
+	Eigen::BDCSVD<Eigen::MatrixXd> bdcsvd;
+	auto svd = bdcsvd.compute(crossCV, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+	Eigen::Matrix3d flip = Eigen::Matrix3d::Identity();
+	if ((svd.matrixU() * svd.matrixV().transpose()).determinant() < 0)
+		flip(2, 2) = -1;
+
+	Eigen::Matrix3d rot = svd.matrixV() * flip * svd.matrixU().transpose();
+	rot.transposeInPlace();
+	return rot;
+}
+
 Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 {
 	std::vector<DSample> deltas;
@@ -263,32 +289,83 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 	char buf[256];
 	snprintf(buf, sizeof buf, "Got %zd samples with %zd delta samples\n", samples.size(), deltas.size());
 	CalCtx.Log(buf);
-	Eigen::MatrixXd refPoints(deltas.size(), 3), targetPoints(deltas.size(), 3);
 
-	// Weighted Kabsch: scaling ref/target rows by sqrt(w) makes the
-	// cross-covariance H = refPoints^T * targetPoints into the correctly
-	// weighted covariance sum(w_i * ref_i * target_i^T). Falls back to
-	// unweighted when no Frame data is used, since PairWeight returns 1 then.
+	// Start from the Frame-confidence prior as weights. Falls back to all-1s
+	// when no Frame data is used, because PairWeight returns 1 then.
+	std::vector<double> weights(deltas.size());
 	for (size_t i = 0; i < deltas.size(); i++)
+		weights[i] = deltas[i].weight;
+
+	Eigen::Matrix3d rot = SolveKabschWeighted(deltas, weights);
+
+	// IRLS (iterative reweighted least squares) refinement. Each iteration
+	// computes the per-delta residual angle between (rot * target) and ref
+	// in rotation-vector space, then down-weights outliers with a Cauchy
+	// kernel: w' = w_prior / (1 + (residual / scale)^2). The Frame
+	// confidence stays baked in as the prior so a low-confidence sample
+	// can't suddenly earn full weight just because this iteration's
+	// residual is small. scale tracks the sample set — 2*MAD, floored at
+	// 1 deg so we never over-reject on a tight fit.
+	//
+	// Three iterations is where convergence has flattened on our test
+	// captures; a fourth rarely moves the rotation more than 0.01 deg.
+	auto rotationVector = [](const Eigen::Matrix3d& m) {
+		Eigen::AngleAxisd aa(m);
+		return aa.axis() * aa.angle();
+	};
+
+	double initialRms = 0.0, finalRms = 0.0;
+	double scaleUsed = 0.0;
+	int downWeighted = 0, rejected = 0;
+	for (int iter = 0; iter < 3; iter++)
 	{
-		double s = std::sqrt(deltas[i].weight);
-		refPoints.row(i) = s * deltas[i].ref;
-		targetPoints.row(i) = s * deltas[i].target;
+		std::vector<double> residuals(deltas.size());
+		for (size_t k = 0; k < deltas.size(); k++)
+		{
+			Eigen::Vector3d targetInRef = rot * deltas[k].target;
+			Eigen::Vector3d diff = deltas[k].ref - targetInRef;
+			residuals[k] = diff.norm();
+		}
+
+		double sumSq = 0.0;
+		for (double r : residuals)
+			sumSq += r * r;
+		double rms = deltas.empty() ? 0.0 : std::sqrt(sumSq / deltas.size());
+		if (iter == 0)
+			initialRms = rms;
+		finalRms = rms;
+
+		std::vector<double> sorted = residuals;
+		std::sort(sorted.begin(), sorted.end());
+		double median = sorted.empty() ? 0.0 : sorted[sorted.size() / 2];
+		std::vector<double> absDev(sorted.size());
+		for (size_t k = 0; k < sorted.size(); k++)
+			absDev[k] = std::fabs(sorted[k] - median);
+		std::sort(absDev.begin(), absDev.end());
+		double mad = absDev.empty() ? 0.0 : absDev[absDev.size() / 2];
+		const double minScale = 1.0 * EIGEN_PI / 180.0;
+		double scale = (std::max)(2.0 * mad, minScale);
+		scaleUsed = scale;
+
+		downWeighted = 0;
+		rejected = 0;
+		for (size_t k = 0; k < deltas.size(); k++)
+		{
+			double r = residuals[k] / scale;
+			double robust = 1.0 / (1.0 + r * r);
+			weights[k] = deltas[k].weight * robust;
+			if (robust < 0.5) downWeighted++;
+			if (robust < 0.1) rejected++;
+		}
+
+		rot = SolveKabschWeighted(deltas, weights);
 	}
 
-	auto crossCV = refPoints.transpose() * targetPoints;
-
-	Eigen::BDCSVD<Eigen::MatrixXd> bdcsvd;
-	auto svd = bdcsvd.compute(crossCV, Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-	Eigen::Matrix3d i = Eigen::Matrix3d::Identity();
-	if ((svd.matrixU() * svd.matrixV().transpose()).determinant() < 0)
-	{
-		i(2, 2) = -1;
-	}
-
-	Eigen::Matrix3d rot = svd.matrixV() * i * svd.matrixU().transpose();
-	rot.transposeInPlace();
+	snprintf(buf, sizeof buf,
+		"IRLS: residual RMS %.3f -> %.3f deg over 3 iterations, Cauchy scale %.2f deg, %d deltas down-weighted (%d effectively rejected) out of %zd\n",
+		initialRms * 180.0 / EIGEN_PI, finalRms * 180.0 / EIGEN_PI,
+		scaleUsed * 180.0 / EIGEN_PI, downWeighted, rejected, deltas.size());
+	CalCtx.Log(buf);
 
 	Eigen::Vector3d euler = rot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI;
 
