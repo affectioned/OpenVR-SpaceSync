@@ -76,6 +76,16 @@ SpaceSync keeps SpaceOverride's tracker drives headset mode untouched and adds t
 
 * The driver logs tracker state changes, drift jumps, and the learned latency offset to `spacesync_driver.log`, so there is an answer to "why did my view just move?"
 
+* The calibration solver is IRLS-reweighted — a handful of flinched or stale sample pairs get down-weighted instead of pulling the fit. Logs the before/after residual RMS so you can see what the robust pass did.
+
+* Small pitch/roll in the calibrated rotation (below 3°) is snapped to yaw-only. Both drivers' standing-zero poses already agree on gravity, so sub-degree pitch/roll is almost always sample noise; removing it makes alignment steadier. Larger tilts are kept and a log warning suggests re-running room setup.
+
+* Opt-in continuous recalibration re-runs the solver every 5 minutes on a rolling sample buffer and applies the result *only* when the proposed shift stays under 2° yaw and 5 cm translation. Larger drifts are logged — manual recalibration is still the right answer for those.
+
+* Live calibration-quality panel on the Calibration tab shows sigma yaw/translation, jumps compensated, and (when continuous recal is on) cycle counts + time to next check.
+
+* Chaperone changes and universe switches are picked up from the public OpenVR events + `Prop_CurrentUniverseId_Uint64` instead of being inferred from pose jumps — the Calibration tab's bounds refresh immediately and `spacesync_universe.log` gets clean transition lines.
+
 ## Requirements
 
 * A lighthouse setup
