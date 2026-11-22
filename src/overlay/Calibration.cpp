@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <mutex>
+#include <cstring>
 #include <iostream>
 #include <algorithm>
 #include <cctype>
@@ -26,6 +28,35 @@
 
 static IPCClient Driver;
 CalibrationContext CalCtx;
+
+// Append each CalCtx.Log message to a persistent file so IRLS stats,
+// gravity-lock decisions, continuous-recal activity, chaperone-event
+// notes, etc. can be reviewed after a VR session the same way the
+// driver's log can. Path matches the lighthouse log — a per-user
+// directory that doesn't need admin to write.
+void PersistOverlayLog(const char* msg)
+{
+	if (!msg || !*msg)
+		return;
+	static std::mutex mtx;
+	std::lock_guard<std::mutex> lock(mtx);
+	static std::string path = []() -> std::string {
+		const char* local = getenv("LOCALAPPDATA");
+		std::string dir = local ? std::string(local) + "\\SpaceSync" : std::string(".");
+		CreateDirectoryA(dir.c_str(), NULL);
+		return dir + "\\spacesync_overlay.log";
+	}();
+	FILE* f = fopen(path.c_str(), "a");
+	if (!f) return;
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	// Each Log call may carry multiple lines ending in \n; prefix the
+	// first line with a timestamp and let the rest flow naturally.
+	std::fprintf(f, "[%02d:%02d:%02d] %s", st.wHour, st.wMinute, st.wSecond, msg);
+	if (msg[std::strlen(msg) - 1] != '\n')
+		std::fprintf(f, "\n");
+	std::fclose(f);
+}
 
 void InitCalibrator()
 {

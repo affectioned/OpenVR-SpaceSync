@@ -11,6 +11,12 @@
 
 #include "Protocol.h"
 
+// Append-to-file mirror of the in-app Log tab. Implemented in
+// Calibration.cpp so this header doesn't drag in Windows/filesystem
+// headers. Safe to call before any state is initialised — the first call
+// lazily opens %LOCALAPPDATA%\SpaceSync\spacesync_overlay.log.
+void PersistOverlayLog(const char* msg);
+
 enum class CalibrationState
 {
 	None,
@@ -215,6 +221,7 @@ struct CalibrationContext
 
 		messages.back().str += msg;
 		std::cerr << msg;
+		PersistOverlayLog(msg.c_str());
 	}
 
 	void Progress(int current, int target)
