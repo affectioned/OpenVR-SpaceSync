@@ -51,6 +51,7 @@ add_executable(SpaceSync
     "src/overlay/Localization.cpp"
     "src/overlay/Sound.cpp"
     "src/overlay/EmbeddedFiles.cpp"
+    "src/overlay/PerfState.cpp"
 )
 
 target_compile_features(SpaceSync PUBLIC cxx_std_20)

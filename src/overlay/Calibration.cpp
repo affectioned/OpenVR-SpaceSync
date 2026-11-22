@@ -9,6 +9,7 @@
 #include "IPCClient.h"
 #include "Sound.h"
 #include "FrameLinkProtocol.h"
+#include "PerfState.h"
 
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@ void PersistOverlayLog(const char* msg)
 {
 	if (!msg || !*msg)
 		return;
+	perf::Scope<32> _s(perf::Global().overlayLog);
 	static std::mutex mtx;
 	std::lock_guard<std::mutex> lock(mtx);
 	static std::string path = []() -> std::string {
@@ -314,7 +316,11 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 		priorWeights[i] = deltas[i].weight;
 
 	calmath::IRLSStats stats;
-	Eigen::Matrix3d rot = calmath::SolveKabschIRLS(deltas, priorWeights, &stats, 3);
+	Eigen::Matrix3d rot;
+	{
+		perf::Scope<8> _kabschScope(perf::Global().lastKabsch);
+		rot = calmath::SolveKabschIRLS(deltas, priorWeights, &stats, 3);
+	}
 
 	snprintf(buf, sizeof buf,
 		"IRLS: residual RMS %.3f -> %.3f deg over %d iterations, Cauchy scale %.2f deg, %d deltas down-weighted (%d effectively rejected) out of %zd\n",
@@ -1737,6 +1743,7 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 
 	std::vector<Sample> samples(g_contRecalBuf.begin(), g_contRecalBuf.end());
 
+	perf::Scope<8> _crScope(perf::Global().lastContRecal);
 	Eigen::Vector3d candidateRot = CalibrateRotation(samples);
 	Eigen::Matrix3d candidateRotMat = EulerDegToMatrix(candidateRot);
 	Eigen::Vector3d candidateTrans = CalibrateTranslation(samples, candidateRotMat, ctx.calibratedScale);
@@ -1784,6 +1791,7 @@ void CalibrationTick(double time)
 		return;
 
 	ctx.timeLastTick = time;
+	perf::Scope<32> _tickScope(perf::Global().calibrationTick);
 
 	static double lastConnectAttempt = -1e9;
 	if (!Driver.IsConnected() && time - lastConnectAttempt >= 3.0)

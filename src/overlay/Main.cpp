@@ -43,6 +43,7 @@
 #include "imgui_impl_openvr.h"
 
 #include "Calibration.h"
+#include "PerfState.h"
 #include "Configuration.h"
 #include "UserInterface.h"
 #include "Theme.h"
@@ -507,6 +508,7 @@ int main(int argc, char** argv)
 
     while (g_ticking)
     {
+        perf::Scope<128> _frameScope(perf::Global().mainFrame);
         while (SDL_PollEvent(&event))
         {
             const bool desktopMouseEvent = event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN

@@ -9,6 +9,7 @@
 #include "Theme.h"
 #include "Version.h"
 #include "FrameLinkProtocol.h"
+#include "PerfState.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -26,6 +27,9 @@
 #endif
 #ifdef max
 #undef max
+#endif
+#ifdef small
+#undef small
 #endif
 
 #include <string>
@@ -1545,6 +1549,47 @@ void UserInterface::RenderFrameLink(const Status& status)
 	{
 		Text(F.regular, 12.5f, P.textDim, "No Frame service has spoken to this driver yet. "
 			"Install contrib/steamframe/service on the Frame to start the pipe.");
+	}
+
+	// --- Overlay performance snapshot -------------------------------------
+	// Shows avg / p95 / last-ms for the hot paths so we can tell at a
+	// glance whether a feature we add has made the overlay slower. Colors
+	// green when the frame budget is comfortable, orange when close to
+	// the edge, red when a path exceeds it. Budgets:
+	//   main frame : 11 ms (90 fps)
+	//   cal tick   : 10 ms (runs on a 50 ms gate, headroom is huge)
+	//   overlay log: 5 ms   (sync fopen; higher = disk thrash worth fixing)
+	VSpace(24.0f);
+	Text(F.semibold, 13.0f, P.textMuted, "Overlay performance");
+	VSpace(6.0f);
+	{
+		auto& g = perf::Global();
+		struct Row { const char* label; double avg, p95, last; double warnMs, badMs; };
+		Row rows[] = {
+			{ "Main frame",   g.mainFrame.Avg(),       g.mainFrame.P95(),       g.mainFrame.Last(),       8.0,  12.0 },
+			{ "Calib tick",   g.calibrationTick.Avg(), g.calibrationTick.P95(), g.calibrationTick.Last(), 5.0,  10.0 },
+			{ "Overlay log",  g.overlayLog.Avg(),      g.overlayLog.P95(),      g.overlayLog.Last(),      2.0,  5.0  },
+			{ "Last Kabsch",  g.lastKabsch.Avg(),      g.lastKabsch.P95(),      g.lastKabsch.Last(),      40.0, 80.0 },
+			{ "Last cont. recal", g.lastContRecal.Avg(), g.lastContRecal.P95(), g.lastContRecal.Last(),    60.0, 120.0 },
+		};
+		for (auto& r : rows)
+		{
+			if (r.last == 0.0 && r.avg == 0.0)
+			{
+				ImGui::Text("  %-18s —", r.label);
+				continue;
+			}
+			unsigned col = r.p95 >= r.badMs ? P.danger
+			             : r.p95 >= r.warnMs ? P.yellow
+			                                 : P.green;
+			char line[160];
+			std::snprintf(line, sizeof line,
+				"  %-18s avg %6.2f ms   p95 %6.2f ms   last %6.2f ms",
+				r.label, r.avg, r.p95, r.last);
+			ImGui::PushStyleColor(ImGuiCol_Text, ColV(col));
+			ImGui::TextUnformatted(line);
+			ImGui::PopStyleColor();
+		}
 	}
 }
 
