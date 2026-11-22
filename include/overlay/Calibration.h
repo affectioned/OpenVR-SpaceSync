@@ -17,6 +17,11 @@
 // lazily opens %LOCALAPPDATA%\SpaceSync\spacesync_overlay.log.
 void PersistOverlayLog(const char* msg);
 
+// One-line roll-up for the overlay log at clean shutdown: session
+// duration + continuous-recal cycle counts + end-of-session drift
+// sigmas. Written to the same persistent file as PersistOverlayLog.
+void WriteSessionSummary(double runtimeSec);
+
 enum class CalibrationState
 {
 	None,

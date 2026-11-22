@@ -63,6 +63,25 @@ void InitCalibrator()
 	Driver.TryConnect();
 }
 
+void WriteSessionSummary(double runtimeSec)
+{
+	int hrs = (int)(runtimeSec / 3600.0);
+	int mins = ((int)(runtimeSec / 60.0)) % 60;
+	int secs = ((int)runtimeSec) % 60;
+	const auto& s = CalCtx.driverStatus;
+	char buf[512];
+	std::snprintf(buf, sizeof buf,
+		"SESSION SUMMARY runtime=%dh%02dm%02ds, continuous_recal applied=%u rejected=%u attempted=%u"
+		" (last shift yaw %.2f deg / trans %.1f cm), end sigma yaw=%.3f deg trans=%.1f mm,"
+		" jumps_compensated=%u\n",
+		hrs, mins, secs,
+		CalCtx.continuousRecalApplied, CalCtx.continuousRecalRejected, CalCtx.continuousRecalAttempted,
+		CalCtx.continuousRecalLastYawDeltaDeg, CalCtx.continuousRecalLastTransDeltaM * 100.0,
+		s.sigmaYawDeg, s.sigmaTranslationM * 1000.0,
+		s.jumpsCompensated);
+	PersistOverlayLog(buf);
+}
+
 bool DriverConnected()
 {
 	return Driver.IsConnected();

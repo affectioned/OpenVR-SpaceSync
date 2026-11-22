@@ -545,3 +545,35 @@ void SaveProfile(CalibrationContext &ctx)
 	std::cout << "Saving profile to registry" << std::endl;
 	WriteRegistryKey(serialized);
 }
+
+bool ExportProfileToFile(const CalibrationContext &ctx, const char *path)
+{
+	std::stringstream io;
+	WriteProfile(const_cast<CalibrationContext&>(ctx), io);
+	std::string serialized = io.str();
+	if (serialized.empty())
+		return false;
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out)
+		return false;
+	out.write(serialized.data(), (std::streamsize)serialized.size());
+	return (bool)out;
+}
+
+bool ImportProfileFromFile(CalibrationContext &ctx, const char *path)
+{
+	std::ifstream in(path, std::ios::binary);
+	if (!in)
+		return false;
+	try
+	{
+		ParseProfile(ctx, in);
+	}
+	catch (const std::runtime_error &e)
+	{
+		std::cerr << "Import failed: " << e.what() << std::endl;
+		return false;
+	}
+	SaveProfile(ctx);
+	return true;
+}

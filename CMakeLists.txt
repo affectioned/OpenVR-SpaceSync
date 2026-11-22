@@ -89,6 +89,7 @@ target_link_libraries(SpaceSync
         PicoJSON
         winmm
         windowsapp
+        comdlg32
 )
 
 if (WIN32)

@@ -54,6 +54,7 @@ static bool g_desktopForced = false;
 static bool g_handoverLaunch = false;
 static bool g_handoverToVrInstance = false;
 static bool g_shutdownScreen = false;
+static ULONGLONG g_sessionStartTickMs = GetTickCount64();
 static bool g_exitStandbyDone = false;
 static uint64_t g_shutdownStart = 0;
 static uint64_t g_shutdownBudgetMs = 0;
@@ -749,6 +750,7 @@ int main(int argc, char** argv)
 #endif
     if (!g_exitStandbyDone && !g_desktopForced && !g_handoverToVrInstance && CalCtx.basestationManagement && CalCtx.dynamicBasestationPower)
         lighthouse::PowerDownAllAndWait(ExitPowerMode(), 8000);
+    WriteSessionSummary((double)(GetTickCount64() - g_sessionStartTickMs) / 1000.0);
     lighthouse::Note("teardown");
     lighthouse::Shutdown();
     sound::Shutdown();

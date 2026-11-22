@@ -9,6 +9,24 @@
 #include "Theme.h"
 #include "Version.h"
 #include "FrameLinkProtocol.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <commdlg.h>
+// windows.h macros that collide with method/local identifiers used below.
+#ifdef DrawText
+#undef DrawText
+#endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 #include <string>
 #include <vector>
@@ -1605,6 +1623,73 @@ static int CurrentPresetIndex()
 	return -1;
 }
 
+// For the "Custom" indicator: find the nearest preset by number of
+// matching flags, and list which flags differ. One readable name per
+// flag; order matches PresetFlags.
+static const char* kPresetFlagNames[] = {
+	"HMD Driven + No Tracker",
+	"Hide Head Tracker",
+	"Follow SLAM HMD",
+	"Stay Aligned",
+	"Continuous Recal",
+	"Lock Rotation to Gravity",
+	"Use Frame data",
+	"Allow Same Tracking Space",
+};
+
+static int NearestPresetIndex()
+{
+	int n = (int)(sizeof(kSetupPresets) / sizeof(kSetupPresets[0]));
+	int best = -1, bestScore = -1;
+	const bool* cur[8] = {
+		&CalCtx.noHeadTracker, &CalCtx.hideHeadTracker, &CalCtx.followSlamHmd,
+		&CalCtx.stayAligned, &CalCtx.continuousRecal, &CalCtx.lockRotationToGravity,
+		&CalCtx.useFrameLink, &CalCtx.allowSameSpaceCalibration,
+	};
+	for (int i = 0; i < n; i++)
+	{
+		const bool* pp[8] = {
+			&kSetupPresets[i].flags.noHeadTracker, &kSetupPresets[i].flags.hideHeadTracker,
+			&kSetupPresets[i].flags.followSlamHmd, &kSetupPresets[i].flags.stayAligned,
+			&kSetupPresets[i].flags.continuousRecal, &kSetupPresets[i].flags.lockRotationToGravity,
+			&kSetupPresets[i].flags.useFrameLink, &kSetupPresets[i].flags.allowSameSpaceCalibration,
+		};
+		int score = 0;
+		for (int k = 0; k < 8; k++) if (*cur[k] == *pp[k]) score++;
+		if (score > bestScore) { bestScore = score; best = i; }
+	}
+	return best;
+}
+
+// Writes a human diff like "Stay Aligned=off, Continuous Recal=off" into
+// out. Returns the number of flags that differ.
+static int DescribeDiff(const PresetFlags& p, char* out, size_t outLen)
+{
+	const bool* cur[8] = {
+		&CalCtx.noHeadTracker, &CalCtx.hideHeadTracker, &CalCtx.followSlamHmd,
+		&CalCtx.stayAligned, &CalCtx.continuousRecal, &CalCtx.lockRotationToGravity,
+		&CalCtx.useFrameLink, &CalCtx.allowSameSpaceCalibration,
+	};
+	const bool* pp[8] = {
+		&p.noHeadTracker, &p.hideHeadTracker, &p.followSlamHmd, &p.stayAligned,
+		&p.continuousRecal, &p.lockRotationToGravity, &p.useFrameLink,
+		&p.allowSameSpaceCalibration,
+	};
+	int differs = 0;
+	size_t pos = 0;
+	for (int k = 0; k < 8 && pos + 1 < outLen; k++)
+	{
+		if (*cur[k] == *pp[k]) continue;
+		int w = std::snprintf(out + pos, outLen - pos, "%s%s=%s",
+			differs ? ", " : "",
+			kPresetFlagNames[k],
+			*cur[k] ? "on" : "off");
+		if (w > 0) pos += (size_t)w;
+		differs++;
+	}
+	return differs;
+}
+
 void UserInterface::RenderSettings()
 {
 	// Setup preset shortcuts. Click to overwrite every setting below with a
@@ -1649,6 +1734,26 @@ void UserInterface::RenderSettings()
 			if (i + 1 < n)
 				ImGui::SameLine(0.0f, gap);
 			(void)btnW;  // width-hint reserved for future styled buttons
+		}
+	}
+	VSpace(8.0f);
+
+	// When the current config doesn't match any preset, surface which flags
+	// differ from the nearest one. Subtle text, non-blocking.
+	if (CurrentPresetIndex() < 0)
+	{
+		int nearest = NearestPresetIndex();
+		if (nearest >= 0)
+		{
+			char buf[384];
+			int n = DescribeDiff(kSetupPresets[nearest].flags, buf, sizeof buf);
+			if (n > 0)
+			{
+				char line[512];
+				std::snprintf(line, sizeof line, "Differs from \"%s\": %s",
+					kSetupPresets[nearest].label, buf);
+				Text(F.regular, 11.5f, P.textDim, line);
+			}
 		}
 	}
 	VSpace(14.0f);
@@ -1955,18 +2060,64 @@ void UserInterface::RenderSettings()
 	ImGui::SetCursorPos(ImVec2(x0, std::max(leftBottom, rightBottom)));
 	VSpace(16.0f);
 
-	// Reset-settings footer. All CalibrationContext fields that aren't
-	// runtime state (device poses, stayAligner state, drift counters) go
-	// back to their in-class defaults. The calibration itself goes with
-	// it, since the two are entangled through the profile. Confirmation
-	// modal handled in RenderConfirm().
-	ButtonOpts reset;
+	// Footer: Import / Export / Reset Settings. The export writes the
+	// current profile to a shareable JSON file; the import loads one
+	// into the live context and persists it. Reset blows everything
+	// back to the baked-in defaults. Each button labels itself.
+	ButtonOpts footer;
+	footer.padX = 16.0f;
+	footer.padY = 8.0f;
+	ButtonOpts reset = footer;
 	reset.kind = ButtonKind::Danger;
-	reset.padX = 16.0f;
-	reset.padY = 8.0f;
-	float rw = TextSize(F.medium, 13.0f, "Reset All Settings").x + px(36.0f);
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - rw) * 0.5f);
-	if (Button("Reset All Settings", reset))
+	const char* imp = "Import Settings...";
+	const char* exp = "Export Settings...";
+	const char* rst = "Reset All Settings";
+	float wImp = TextSize(F.medium, 13.0f, imp).x + px(36.0f);
+	float wExp = TextSize(F.medium, 13.0f, exp).x + px(36.0f);
+	float wRst = TextSize(F.medium, 13.0f, rst).x + px(36.0f);
+	float gap = 10.0f;
+	float total = wImp + wExp + wRst + gap * 2;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - total) * 0.5f);
+	if (Button(imp, footer))
+	{
+		char path[MAX_PATH] = {};
+		OPENFILENAMEA ofn = {};
+		ofn.lStructSize = sizeof(ofn);
+		ofn.lpstrFilter = "SpaceSync profile (*.json)\0*.json\0All files\0*.*\0";
+		ofn.lpstrFile = path;
+		ofn.nMaxFile = MAX_PATH;
+		ofn.lpstrTitle = "Import SpaceSync profile";
+		ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+		if (GetOpenFileNameA(&ofn))
+		{
+			bool ok = ImportProfileFromFile(CalCtx, path);
+			char msg[MAX_PATH + 64];
+			std::snprintf(msg, sizeof msg, ok ? "Imported profile: %s\n" : "Import failed: %s\n", path);
+			CalCtx.Log(msg);
+		}
+	}
+	ImGui::SameLine(0.0f, gap);
+	if (Button(exp, footer))
+	{
+		char path[MAX_PATH] = "spacesync-profile.json";
+		OPENFILENAMEA ofn = {};
+		ofn.lStructSize = sizeof(ofn);
+		ofn.lpstrFilter = "SpaceSync profile (*.json)\0*.json\0";
+		ofn.lpstrFile = path;
+		ofn.nMaxFile = MAX_PATH;
+		ofn.lpstrTitle = "Export SpaceSync profile";
+		ofn.lpstrDefExt = "json";
+		ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+		if (GetSaveFileNameA(&ofn))
+		{
+			bool ok = ExportProfileToFile(CalCtx, path);
+			char msg[MAX_PATH + 64];
+			std::snprintf(msg, sizeof msg, ok ? "Exported profile: %s\n" : "Export failed: %s\n", path);
+			CalCtx.Log(msg);
+		}
+	}
+	ImGui::SameLine(0.0f, gap);
+	if (Button(rst, reset))
 		confirmResetSettings_ = true;
 	VSpace(8.0f);
 }
