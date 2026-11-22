@@ -174,7 +174,12 @@ void TrackingPreview::Render(ImVec2 size)
 		{
 			std::string serial = DeviceProp(sys, id, vr::Prop_SerialNumber_String);
 			std::string label;
-			if (!CalCtx.trackerSerial.empty() && serial == CalCtx.trackerSerial)
+			// "Head tracker" label is only meaningful when the calibration
+			// profile actually involves a tracker mounted on the headset.
+			// In HMD Driven + No Tracker (CalCtx.noHeadTracker) the user
+			// held something against their head for the one-off calibration
+			// and put it back afterwards — it isn't a head tracker now.
+			if (!CalCtx.noHeadTracker && !CalCtx.trackerSerial.empty() && serial == CalCtx.trackerSerial)
 				label = "Head tracker";
 			else
 			{

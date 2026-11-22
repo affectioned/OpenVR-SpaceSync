@@ -602,8 +602,26 @@ void UserInterface::RenderCalibration(const Status& status)
 		const float panelW = px(360.0f);
 		float px0 = c.x - panelW * 0.5f;
 
+		// Overall status: worst of yaw/translation drives a colored chip at
+		// the top so you can tell at a glance whether the fit is OK. Green
+		// below both warn thresholds, orange between warn and bad, red once
+		// either value hits the bad threshold.
+		auto overallCol = [&]() {
+			if (st.sigmaYawDeg >= yawBadDeg || st.sigmaTranslationM >= transBadM) return P.danger;
+			if (st.sigmaYawDeg >= yawWarnDeg || st.sigmaTranslationM >= transWarnM) return P.yellow;
+			return P.green;
+		}();
+		const char* overallLbl =
+			overallCol == P.green  ? loc::tr("Good")     :
+			overallCol == P.yellow ? loc::tr("Watch")    :
+			                         loc::tr("Degraded");
+
 		ImGui::SetCursorScreenPos(ImVec2(px0, ImGui::GetCursorScreenPos().y));
 		Text(F.semibold, 13.0f, P.textMuted, loc::tr("Calibration quality"));
+		ImGui::SameLine();
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(panelW) - ImGui::CalcTextSize(loc::tr("Calibration quality")).x
+			- TextSize(F.semibold, 12.0f, overallLbl).x - px(16.0f));
+		Text(F.semibold, 12.0f, overallCol, overallLbl);
 		VSpace(6.0f);
 
 		char buf[96];
@@ -658,7 +676,16 @@ void UserInterface::RenderCalibration(const Status& status)
 			{
 				std::snprintf(buf, sizeof buf, "%+.2f deg / %.1f cm",
 					CalCtx.continuousRecalLastYawDeltaDeg, CalCtx.continuousRecalLastTransDeltaM * 100.0);
-				row(loc::tr("Last proposed shift"), buf, P.textDim);
+				// Color the shift by how close it got to the gate: green
+				// when well inside, orange when near the ceiling, red once
+				// it would have been rejected.
+				double yawFrac   = CalCtx.continuousRecalLastYawDeltaDeg / (CalCtx.continuousRecalMaxYawDeltaDeg + 1e-9);
+				double transFrac = CalCtx.continuousRecalLastTransDeltaM  / (CalCtx.continuousRecalMaxTransDeltaM + 1e-9);
+				double worst = std::max(yawFrac, transFrac);
+				unsigned shiftCol = worst >= 1.0 ? P.danger
+				                  : worst >= 0.7 ? P.yellow
+				                                 : P.green;
+				row(loc::tr("Last proposed shift"), buf, shiftCol);
 			}
 
 			double now = ImGui::GetTime();
