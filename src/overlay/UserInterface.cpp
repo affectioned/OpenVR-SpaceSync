@@ -1475,8 +1475,103 @@ void UserInterface::RenderFrameLink(const Status& status)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Setup presets. Each one writes a tested combination of flags for a common
+// hardware archetype so a new user doesn't have to figure the config out
+// field-by-field. The preset only touches *settings* — it never clears the
+// current calibration, never touches hidden runtime state.
+// ---------------------------------------------------------------------------
+struct SetupPreset
+{
+	const char* label;
+	const char* tooltip;
+	void (*apply)(CalibrationContext&);
+};
+
+static void ApplyPreset_StreamedHmdBody(CalibrationContext& c)
+{
+	c.noHeadTracker        = true;
+	c.hideHeadTracker      = false;   // no head tracker to hide
+	c.followSlamHmd        = true;
+	c.stayAligned          = true;
+	c.continuousRecal      = true;
+	c.lockRotationToGravity = true;
+	c.useFrameLink         = true;
+	c.allowSameSpaceCalibration = false;
+}
+
+static void ApplyPreset_StreamedHmdHead(CalibrationContext& c)
+{
+	c.noHeadTracker        = false;
+	c.hideHeadTracker      = true;
+	c.followSlamHmd        = true;
+	c.stayAligned          = false;
+	c.continuousRecal      = false;
+	c.lockRotationToGravity = true;
+	c.useFrameLink         = true;
+	c.allowSameSpaceCalibration = false;
+}
+
+static void ApplyPreset_LighthouseOnly(CalibrationContext& c)
+{
+	c.noHeadTracker        = false;
+	c.hideHeadTracker      = false;
+	c.followSlamHmd        = false;   // tracker drives HMD
+	c.stayAligned          = false;
+	c.continuousRecal      = false;
+	c.lockRotationToGravity = true;
+	c.useFrameLink         = false;
+	c.allowSameSpaceCalibration = true;
+}
+
+static const SetupPreset kSetupPresets[] = {
+	{ "Streamed HMD + body trackers",
+	  "Steam Frame / Quest Link / etc with a hip (and feet) tracker but no tracker on the head. HMD Driven + No Tracker, Follow mode, Stay Aligned, continuous recalibration, gravity lock, Frame data on.",
+	  ApplyPreset_StreamedHmdBody },
+	{ "Streamed HMD + head tracker",
+	  "Classic SpaceCalibrator setup — SLAM HMD with a Vive Tracker mounted on the headset. Follow mode, Hide Head Tracker, Stay Aligned off, continuous recalibration off.",
+	  ApplyPreset_StreamedHmdHead },
+	{ "Lighthouse-only (same space)",
+	  "Vive / Index HMD with lighthouse trackers only, no SLAM involved. Allow Same Tracking Space, tracker drives HMD, continuous recalibration off.",
+	  ApplyPreset_LighthouseOnly },
+};
+
 void UserInterface::RenderSettings()
 {
+	// Setup preset shortcuts. Click to overwrite every setting below with a
+	// tested combination for a common hardware archetype. Current
+	// calibration and base-station locks are untouched.
+	Text(F.semibold, 12.5f, P.textMuted, "Setup preset");
+	VSpace(6.0f);
+	{
+		float avail = ImGui::GetContentRegionAvail().x;
+		int n = (int)(sizeof(kSetupPresets) / sizeof(kSetupPresets[0]));
+		float gap = 8.0f;
+		float btnW = (avail - gap * (n - 1)) / (float)n;
+		for (int i = 0; i < n; i++)
+		{
+			ButtonOpts po;
+			po.padX = 12.0f;
+			po.padY = 10.0f;
+			ImGui::PushID(i);
+			if (Button(kSetupPresets[i].label, po))
+			{
+				kSetupPresets[i].apply(CalCtx);
+				SaveProfile(CalCtx);
+				char msg[256];
+				std::snprintf(msg, sizeof msg, "Applied preset: %s\n", kSetupPresets[i].label);
+				CalCtx.Log(msg);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", kSetupPresets[i].tooltip);
+			ImGui::PopID();
+			if (i + 1 < n)
+				ImGui::SameLine(0.0f, gap);
+			(void)btnW;  // width-hint reserved for future styled buttons
+		}
+	}
+	VSpace(14.0f);
+
 	Text(F.regular, 13.0f, P.yellow, "NOTE: Most settings below require re-calibration to be applied");
 	VSpace(16.0f);
 
