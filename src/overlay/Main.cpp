@@ -506,9 +506,28 @@ int main(int argc, char** argv)
     vr::VREvent_t vr_event = {};
     vr::VREvent_t sys_event = {};
 
+    ULONGLONG lastPerfDumpTickMs = GetTickCount64();
     while (g_ticking)
     {
         perf::Scope<128> _frameScope(perf::Global().mainFrame);
+
+        // Dump the perf snapshot to the overlay log every 30 s so we can
+        // read it without staring at the UI. Cheap: ~1 line / 30 s.
+        if (GetTickCount64() - lastPerfDumpTickMs >= 30000)
+        {
+            lastPerfDumpTickMs = GetTickCount64();
+            auto& g = perf::Global();
+            char buf[320];
+            std::snprintf(buf, sizeof buf,
+                "PERF frame avg=%.2f p95=%.2f ms, calib_tick avg=%.2f p95=%.2f ms, "
+                "overlay_log avg=%.2f p95=%.2f ms, kabsch last=%.2f ms, cont_recal last=%.2f ms\n",
+                g.mainFrame.Avg(),       g.mainFrame.P95(),
+                g.calibrationTick.Avg(), g.calibrationTick.P95(),
+                g.overlayLog.Avg(),      g.overlayLog.P95(),
+                g.lastKabsch.Last(),     g.lastContRecal.Last());
+            PersistOverlayLog(buf);
+        }
+
         while (SDL_PollEvent(&event))
         {
             const bool desktopMouseEvent = event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
