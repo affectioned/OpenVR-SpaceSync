@@ -1224,7 +1224,7 @@ static void RecordTilt(CalibrationContext &ctx, const protocol::DriverStatus &st
 	ctx.refinementDirty = true;
 }
 
-static uint32_t FindBodyTracker()
+uint32_t FindBodyTracker()
 {
 	uint32_t chest = vr::k_unTrackedDeviceIndexInvalid;
 	char buffer[vr::k_unMaxPropertyStringSize];

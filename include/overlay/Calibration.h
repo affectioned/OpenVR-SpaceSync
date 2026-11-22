@@ -238,6 +238,11 @@ extern CalibrationContext CalCtx;
 
 void InitCalibrator();
 bool DriverConnected();
+// Returns the device index of the hip/waist (preferred) or chest tracker
+// if either is connected, otherwise vr::k_unTrackedDeviceIndexInvalid.
+// Used by SendHmdTrackerCommand to pick a Stay Aligned hip source, and
+// by the UI to warn when Stay Aligned is enabled without one.
+uint32_t FindBodyTracker();
 void CalibrationTick(double time);
 void StartCalibration();
 void CancelCalibration();   // abort a running calibration, restore the saved profile
