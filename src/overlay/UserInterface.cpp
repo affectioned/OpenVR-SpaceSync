@@ -8,6 +8,7 @@
 #include "Localization.h"
 #include "Theme.h"
 #include "Version.h"
+#include "FrameLinkProtocol.h"
 
 #include <string>
 #include <vector>
@@ -646,6 +647,41 @@ void UserInterface::RenderCalibration(const Status& status)
 		{
 			std::snprintf(buf, sizeof buf, "%u", st.refinementSolves);
 			row(loc::tr("Refinement solves"), buf, P.textStrong);
+		}
+
+		// Frame Link status chip — only meaningful when the user opted into
+		// Frame data. Reads the latest snapshot the driver published through
+		// IPC; we don't poll the socket directly here.
+		if (CalCtx.useFrameLink)
+		{
+			const auto& fl = CalCtx.frameLinkStatus;
+			const char* flText = "silent";
+			unsigned flCol = P.textDim;
+			if (!fl.listening)
+			{
+				flText = "off"; flCol = P.textDim;
+			}
+			else if (!fl.hasPeer || fl.lastPacketAgeMs < 0 || fl.lastPacketAgeMs > 2000.0)
+			{
+				flText = "silent"; flCol = P.yellow;
+			}
+			else if (fl.hasPose && (fl.poseFlags & framelink::PoseFlagInertialOnly))
+			{
+				flText = "coasting"; flCol = P.yellow;
+			}
+			else if (fl.hasPose && fl.lastPoseConfidence < CalCtx.frameLinkMinConfidence)
+			{
+				flText = "low conf"; flCol = P.yellow;
+			}
+			else if (fl.hasPose)
+			{
+				flText = "tracking"; flCol = P.green;
+			}
+			else
+			{
+				flText = "no pose"; flCol = P.textDim;
+			}
+			row(loc::tr("Frame"), flText, flCol);
 		}
 
 		// Recommendation chip when quality is clearly degraded.
@@ -1500,72 +1536,96 @@ void UserInterface::RenderFrameLink(const Status& status)
 // hardware archetype so a new user doesn't have to figure the config out
 // field-by-field. The preset only touches *settings* — it never clears the
 // current calibration, never touches hidden runtime state.
+//
+// Each preset is *data* so both the apply path and the "which preset am I
+// on right now?" indicator share the same source of truth.
 // ---------------------------------------------------------------------------
+struct PresetFlags
+{
+	bool noHeadTracker;
+	bool hideHeadTracker;
+	bool followSlamHmd;
+	bool stayAligned;
+	bool continuousRecal;
+	bool lockRotationToGravity;
+	bool useFrameLink;
+	bool allowSameSpaceCalibration;
+};
+
 struct SetupPreset
 {
 	const char* label;
 	const char* tooltip;
-	void (*apply)(CalibrationContext&);
+	PresetFlags flags;
 };
 
-static void ApplyPreset_StreamedHmdBody(CalibrationContext& c)
+static void ApplyPresetFlags(CalibrationContext& c, const PresetFlags& p)
 {
-	c.noHeadTracker        = true;
-	c.hideHeadTracker      = false;   // no head tracker to hide
-	c.followSlamHmd        = true;
-	c.stayAligned          = true;
-	c.continuousRecal      = true;
-	c.lockRotationToGravity = true;
-	c.useFrameLink         = true;
-	c.allowSameSpaceCalibration = false;
+	c.noHeadTracker              = p.noHeadTracker;
+	c.hideHeadTracker            = p.hideHeadTracker;
+	c.followSlamHmd              = p.followSlamHmd;
+	c.stayAligned                = p.stayAligned;
+	c.continuousRecal            = p.continuousRecal;
+	c.lockRotationToGravity      = p.lockRotationToGravity;
+	c.useFrameLink               = p.useFrameLink;
+	c.allowSameSpaceCalibration  = p.allowSameSpaceCalibration;
 }
 
-static void ApplyPreset_StreamedHmdHead(CalibrationContext& c)
+static bool CurrentMatches(const CalibrationContext& c, const PresetFlags& p)
 {
-	c.noHeadTracker        = false;
-	c.hideHeadTracker      = true;
-	c.followSlamHmd        = true;
-	c.stayAligned          = false;
-	c.continuousRecal      = false;
-	c.lockRotationToGravity = true;
-	c.useFrameLink         = true;
-	c.allowSameSpaceCalibration = false;
-}
-
-static void ApplyPreset_LighthouseOnly(CalibrationContext& c)
-{
-	c.noHeadTracker        = false;
-	c.hideHeadTracker      = false;
-	c.followSlamHmd        = false;   // tracker drives HMD
-	c.stayAligned          = false;
-	c.continuousRecal      = false;
-	c.lockRotationToGravity = true;
-	c.useFrameLink         = false;
-	c.allowSameSpaceCalibration = true;
+	return c.noHeadTracker              == p.noHeadTracker
+	    && c.hideHeadTracker            == p.hideHeadTracker
+	    && c.followSlamHmd              == p.followSlamHmd
+	    && c.stayAligned                == p.stayAligned
+	    && c.continuousRecal            == p.continuousRecal
+	    && c.lockRotationToGravity      == p.lockRotationToGravity
+	    && c.useFrameLink               == p.useFrameLink
+	    && c.allowSameSpaceCalibration  == p.allowSameSpaceCalibration;
 }
 
 static const SetupPreset kSetupPresets[] = {
 	{ "Streamed HMD + body trackers",
 	  "Steam Frame / Quest Link / etc with a hip (and feet) tracker but no tracker on the head. HMD Driven + No Tracker, Follow mode, Stay Aligned, continuous recalibration, gravity lock, Frame data on.",
-	  ApplyPreset_StreamedHmdBody },
+	  { true,  false, true,  true,  true,  true, true,  false } },
 	{ "Streamed HMD + head tracker",
 	  "Classic SpaceCalibrator setup — SLAM HMD with a Vive Tracker mounted on the headset. Follow mode, Hide Head Tracker, Stay Aligned off, continuous recalibration off.",
-	  ApplyPreset_StreamedHmdHead },
+	  { false, true,  true,  false, false, true, true,  false } },
 	{ "Lighthouse-only (same space)",
 	  "Vive / Index HMD with lighthouse trackers only, no SLAM involved. Allow Same Tracking Space, tracker drives HMD, continuous recalibration off.",
-	  ApplyPreset_LighthouseOnly },
+	  { false, false, false, false, false, true, false, true  } },
 };
+
+// Returns the preset index the current CalCtx matches, or -1 for "Custom".
+static int CurrentPresetIndex()
+{
+	int n = (int)(sizeof(kSetupPresets) / sizeof(kSetupPresets[0]));
+	for (int i = 0; i < n; i++)
+		if (CurrentMatches(CalCtx, kSetupPresets[i].flags))
+			return i;
+	return -1;
+}
 
 void UserInterface::RenderSettings()
 {
 	// Setup preset shortcuts. Click to overwrite every setting below with a
 	// tested combination for a common hardware archetype. Current
 	// calibration and base-station locks are untouched.
-	Text(F.semibold, 12.5f, P.textMuted, "Setup preset");
+	{
+		int activeIdx = CurrentPresetIndex();
+		Text(F.semibold, 12.5f, P.textMuted, "Setup preset");
+		ImGui::SameLine();
+		const char* indicator =
+			activeIdx < 0 ? "Custom"
+			              : kSetupPresets[activeIdx].label;
+		unsigned col = activeIdx < 0 ? P.textDim : P.green;
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(6.0f));
+		Text(F.regular, 12.0f, col, indicator);
+	}
 	VSpace(6.0f);
 	{
 		float avail = ImGui::GetContentRegionAvail().x;
 		int n = (int)(sizeof(kSetupPresets) / sizeof(kSetupPresets[0]));
+		int activeIdx = CurrentPresetIndex();
 		float gap = 8.0f;
 		float btnW = (avail - gap * (n - 1)) / (float)n;
 		for (int i = 0; i < n; i++)
@@ -1573,10 +1633,11 @@ void UserInterface::RenderSettings()
 			ButtonOpts po;
 			po.padX = 12.0f;
 			po.padY = 10.0f;
+			if (i == activeIdx) po.kind = ButtonKind::Primary;  // highlight the active one
 			ImGui::PushID(i);
 			if (Button(kSetupPresets[i].label, po))
 			{
-				kSetupPresets[i].apply(CalCtx);
+				ApplyPresetFlags(CalCtx, kSetupPresets[i].flags);
 				SaveProfile(CalCtx);
 				char msg[256];
 				std::snprintf(msg, sizeof msg, "Applied preset: %s\n", kSetupPresets[i].label);
