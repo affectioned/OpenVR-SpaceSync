@@ -763,11 +763,10 @@ void UserInterface::RenderCalibration(const Status& status)
 		Text(F.regular, 13.0f, P.yellow, warn);
 	}
 
-	// Stay Aligned needs a Waist-role tracker to actually correct drift;
-	// without one it silently degrades to catching tracking hiccups only.
-	// If the user has it enabled in the mode where it makes sense and no
-	// such tracker is connected, surface the gap right where the user is
-	// already looking at calibration quality.
+	// Stay Aligned does useful work without a Waist tracker (it still
+	// catches hiccups and holds alignment through them). A waist role
+	// unlocks the slow-drift correction path on top. Keep the hint
+	// informational, not alarming.
 	if (calibrated
 	    && CalCtx.stayAligned
 	    && CalCtx.followSlamHmd
@@ -775,11 +774,11 @@ void UserInterface::RenderCalibration(const Status& status)
 	    && FindBodyTracker() == vr::k_unTrackedDeviceIndexInvalid)
 	{
 		VSpace(14.0f);
-		const char* line = loc::tr("Stay Aligned is on, but SteamVR doesn't have the Waist role assigned to any tracker — it can only hold alignment through hiccups, not correct drift. Assign Waist in SteamVR -> Devices -> Manage Vive Trackers.");
-		ImVec2 ts = TextSize(F.regular, 12.5f, line);
+		const char* line = loc::tr("Stay Aligned is running in hiccup-hold mode. For slow-drift correction on top, assign a tracker to the Waist role in SteamVR (optional).");
+		ImVec2 ts = TextSize(F.regular, 12.0f, line);
 		ImGui::SetCursorScreenPos(ImVec2(c.x - (std::min)(ts.x, px(500.0f)) * 0.5f, ImGui::GetCursorScreenPos().y));
 		ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + px(500.0f));
-		Text(F.regular, 12.5f, P.yellow, line);
+		Text(F.regular, 12.0f, P.textDim, line);
 		ImGui::PopTextWrapPos();
 	}
 
