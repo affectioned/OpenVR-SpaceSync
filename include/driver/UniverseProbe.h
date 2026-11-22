@@ -77,17 +77,44 @@ namespace universe
 		// "Selected existing universe" / "Creating new universe" log lines.
 		uint64_t checkUniverseChange(uint32_t hmdId, double now)
 		{
-			if (hmdId >= vr::k_unMaxTrackedDeviceCount)
-				return lastUniverseId;
 			if (now - lastUniverseCheck < 1.0)
 				return lastUniverseId;
 			lastUniverseCheck = now;
-			vr::PropertyContainerHandle_t container =
-				vr::VRProperties()->TrackedDeviceToPropertyContainer(hmdId);
-			vr::ETrackedPropertyError err = vr::TrackedProp_Success;
-			uint64_t current = vr::VRProperties()->GetUint64Property(
-				container, vr::Prop_CurrentUniverseId_Uint64, &err);
-			if (err != vr::TrackedProp_Success)
+
+			// Streamed HMDs (Steam Frame, Quest Link, WMR) frequently skip
+			// writing Prop_CurrentUniverseId_Uint64 on the HMD container
+			// because they're standalone-tracked and don't own a shared
+			// universe. Lighthouse devices DO write it. Probe the HMD
+			// first, then fall back to any visible device that does carry
+			// a valid id. All devices in the same universe report the same
+			// id, so the fallback is safe.
+			auto readUniverseId = [](uint32_t deviceId) -> uint64_t {
+				if (deviceId >= vr::k_unMaxTrackedDeviceCount) return 0;
+				vr::PropertyContainerHandle_t container =
+					vr::VRProperties()->TrackedDeviceToPropertyContainer(deviceId);
+				vr::ETrackedPropertyError err = vr::TrackedProp_Success;
+				uint64_t v = vr::VRProperties()->GetUint64Property(
+					container, vr::Prop_CurrentUniverseId_Uint64, &err);
+				return err == vr::TrackedProp_Success ? v : 0;
+			};
+
+			uint64_t current = readUniverseId(hmdId);
+			uint32_t sourceId = hmdId;
+			if (current == 0)
+			{
+				for (uint32_t id = 0; id < vr::k_unMaxTrackedDeviceCount; id++)
+				{
+					if (id == hmdId) continue;
+					uint64_t v = readUniverseId(id);
+					if (v != 0)
+					{
+						current = v;
+						sourceId = id;
+						break;
+					}
+				}
+			}
+			if (current == 0)
 				return lastUniverseId;
 
 			std::lock_guard<std::mutex> lock(mutex);
@@ -100,16 +127,16 @@ namespace universe
 			{
 				universeIdSeeded = true;
 				lastUniverseId = current;
-				line("UNIVERSE id=%llu (initial, from HMD Prop_CurrentUniverseId_Uint64)",
-					(unsigned long long)current);
+				line("UNIVERSE id=%llu (initial, read from device %u Prop_CurrentUniverseId_Uint64)",
+					(unsigned long long)current, sourceId);
 				return current;
 			}
 			if (current != lastUniverseId)
 			{
-				line("UNIVERSE id changed %llu -> %llu (from HMD Prop_CurrentUniverseId_Uint64)",
-					(unsigned long long)lastUniverseId, (unsigned long long)current);
+				line("UNIVERSE id changed %llu -> %llu (read from device %u Prop_CurrentUniverseId_Uint64)",
+					(unsigned long long)lastUniverseId, (unsigned long long)current, sourceId);
 				lastUniverseId = current;
-				startCapture(now, "universe-id", hmdId);
+				startCapture(now, "universe-id", sourceId);
 			}
 			return current;
 		}
