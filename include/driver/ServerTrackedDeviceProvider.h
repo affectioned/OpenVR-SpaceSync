@@ -131,6 +131,11 @@ private:
 	double frameLinkTrustLogTime = 0.0;
 	int frameLinkStayTrustState = -1;    // same shape as above, but for the Stay Aligned path
 	double frameLinkStayTrustLogTime = 0.0;
+	// Last time the Frame was reporting low confidence or IMU-only. A
+	// kinematic pose jump within ~2 s of that is almost always a SLAM
+	// relocalization, not a user recenter — Stay Aligned's "followed
+	// (recenter)" decision gets overridden to "held" during that window.
+	double frameLinkStayLowConfTime = -1e9;
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };

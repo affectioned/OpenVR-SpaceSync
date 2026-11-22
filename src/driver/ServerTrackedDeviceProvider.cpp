@@ -747,7 +747,14 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 			int trust = 0;
 			if (framePose.flags & framelink::PoseFlagInertialOnly) trust = 2;
 			else if (framePose.confidence < minConfidence)         trust = 1;
-			if (trust != 0) stayGated = true;
+			if (trust != 0)
+			{
+				stayGated = true;
+				// Remember when we last saw the Frame in trouble so a
+				// pose jump within the next ~2 s can be identified as a
+				// post-relocalization effect instead of a user recenter.
+				frameLinkStayLowConfTime = nowSeconds;
+			}
 
 			bool firstTransition = frameLinkStayTrustState == -1;
 			if (trust != frameLinkStayTrustState && (firstTransition || nowSeconds - frameLinkStayTrustLogTime > 2.0))
@@ -787,11 +794,26 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 
 		if (ev.jump)
 		{
+			// Guard against post-relocalization jumps masquerading as
+			// recenters. If the Frame was reporting low confidence or
+			// inertial-only within the last 2 s, an "ev.follow" decision
+			// almost certainly reflects SLAM re-acquiring its world after
+			// the HMD was off / blocked, not the user asking for a
+			// recenter. Override to held in that window. (Observed on
+			// 2026-11-22: a 110 cm / 28 deg post-doff jump was followed
+			// as a recenter and desynced the entire session.)
+			bool postReloc = ev.follow
+			              && (nowSeconds - frameLinkStayLowConfTime < 2.0);
+			if (postReloc)
+				ev.follow = false;
 			if (ev.follow)
 				RebaseDrift(ev.J);
 			LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s",
 				stay::Deg(ev.J.yaw), vecNorm(ev.J.t) * 100.0, ev.T, ev.yawAfterDeg, ev.lambda,
-				ev.follow ? "followed (recenter)" : (ev.reverted ? "held, earlier hiccup reverted" : "held (hiccup)"));
+				postReloc                   ? "held (post-relocalization, Frame was coasting)"
+				: ev.follow                 ? "followed (recenter)"
+				: ev.reverted               ? "held, earlier hiccup reverted"
+				                            : "held (hiccup)");
 		}
 		if (ev.rescueChecked)
 			LOG("Stay Aligned: alignment check after headset pause: hip mismatch %.1f cm, yaw mismatch %.1f deg, pose looked re-centred %s -> %s",
