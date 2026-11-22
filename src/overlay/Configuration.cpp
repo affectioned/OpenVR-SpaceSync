@@ -159,7 +159,7 @@ static void ParseProfile(CalibrationContext &ctx, std::istream &stream)
 	if (obj["continuousRecal"].is<bool>())
 		ctx.continuousRecal = obj["continuousRecal"].get<bool>();
 	else
-		ctx.continuousRecal = false;
+		ctx.continuousRecal = true;
 
 	if (obj["continuousRecalInterval"].is<double>())
 	{
@@ -168,7 +168,7 @@ static void ParseProfile(CalibrationContext &ctx, std::istream &stream)
 		if (ctx.continuousRecalIntervalSeconds > 3600.0) ctx.continuousRecalIntervalSeconds = 3600.0;
 	}
 	else
-		ctx.continuousRecalIntervalSeconds = 300.0;
+		ctx.continuousRecalIntervalSeconds = 60.0;
 
 	if (obj["lhSmoothing"].is<double>())
 	{

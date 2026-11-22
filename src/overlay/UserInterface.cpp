@@ -1750,6 +1750,21 @@ void UserInterface::RenderSettings()
 
 	float rightBottom = ImGui::GetCursorPosY();
 	ImGui::SetCursorPos(ImVec2(x0, std::max(leftBottom, rightBottom)));
+	VSpace(16.0f);
+
+	// Reset-settings footer. All CalibrationContext fields that aren't
+	// runtime state (device poses, stayAligner state, drift counters) go
+	// back to their in-class defaults. The calibration itself goes with
+	// it, since the two are entangled through the profile. Confirmation
+	// modal handled in RenderConfirm().
+	ButtonOpts reset;
+	reset.kind = ButtonKind::Danger;
+	reset.padX = 16.0f;
+	reset.padY = 8.0f;
+	float rw = TextSize(F.medium, 13.0f, "Reset All Settings").x + px(36.0f);
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - rw) * 0.5f);
+	if (Button("Reset All Settings", reset))
+		confirmResetSettings_ = true;
 	VSpace(8.0f);
 }
 
@@ -1936,6 +1951,72 @@ void UserInterface::RenderWizard()
 
 void UserInterface::RenderConfirm()
 {
+	// Reset-settings modal (handled before the remove-calibration one so
+	// the two popups don't fight for OpenPopup priority).
+	if (confirmResetSettings_)
+	{
+		const char* resetId = "##confirm_reset";
+		if (!ImGui::IsPopupOpen(resetId))
+			ImGui::OpenPopup(resetId);
+
+		const float w = 420.0f;
+		ImGuiIO& io = ImGui::GetIO();
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(px(w), 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(20.0f), px(20.0f)));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, px(6.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+		ImGui::PushStyleColor(ImGuiCol_Border, ColV(P.borderButton));
+		ImGui::PushStyleColor(ImGuiCol_PopupBg, ColV(P.card));
+
+		const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+		if (ImGui::BeginPopupModal(resetId, nullptr, flags))
+		{
+			const float inner = w - 40.0f;
+			Text(F.semibold, 14.0f, P.textBright, "Reset all settings?");
+			VSpace(8.0f);
+			TextWrapped(F.regular, 13.0f, P.textMuted, inner,
+				"Every preference on this page goes back to its default (filters, Follow mode, Stay Aligned, continuous recal, gravity lock, latency tuning, language, …). Your current calibration is also cleared — you will need to calibrate again.");
+			VSpace(20.0f);
+
+			ButtonOpts cancel;
+			cancel.padX = 16.0f;
+			cancel.padY = 8.0f;
+			ButtonOpts doReset;
+			doReset.kind = ButtonKind::Danger;
+			doReset.padX = 16.0f;
+			doReset.padY = 8.0f;
+			float cw = TextSize(F.medium, 13.0f, "Cancel").x + px(32.0f);
+			float rw = TextSize(F.semibold, 13.0f, "Reset").x + px(32.0f);
+			float x0 = ImGui::GetCursorPosX();
+			ImGui::SetCursorPosX(x0 + px(inner) - cw - px(8.0f) - rw);
+			if (Button("Cancel", cancel))
+			{
+				confirmResetSettings_ = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine(0.0f, px(8.0f));
+			if (Button("Reset", doReset))
+			{
+				// Re-initialise the entire context in place. All fields go
+				// to their in-class defaults (continuousRecal=true,
+				// interval=60, lockRotToGravity=true, etc). SaveProfile
+				// then persists the reset to the registry, so a restart
+				// loads the same clean state.
+				CalCtx = CalibrationContext();
+				SaveProfile(CalCtx);
+				confirmResetSettings_ = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::Dummy(ImVec2(px(inner), 0.0f));
+			ImGui::EndPopup();
+		}
+
+		ImGui::PopStyleColor(2);
+		ImGui::PopStyleVar(3);
+	}
+
 	const char* popupId = "##confirm_remove";
 	if (confirmRemove_ && !ImGui::IsPopupOpen(popupId))
 		ImGui::OpenPopup(popupId);

@@ -111,6 +111,7 @@ private:
 	bool editView_ = false;
 	double editStep_ = 0.1;
 	bool confirmRemove_ = false;
+	bool confirmResetSettings_ = false;
 	bool wizardOpen_ = false;
 	float scrollTarget_ = 0.0f;
 	float scrollApplied_ = 0.0f;

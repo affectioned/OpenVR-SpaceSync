@@ -115,11 +115,11 @@ struct CalibrationContext
 		vr::HmdVector2_t playSpaceSize;
 	} chaperone;
 
-	// Continuous recalibration. Off by default — opt in when the user is
-	// comfortable with the one-shot calibration and wants slow drift
-	// between the HMD driver and tracker driver corrected over time.
-	bool continuousRecal = false;
-	double continuousRecalIntervalSeconds = 300.0;  // 5 minutes
+	// Continuous recalibration. Default on during the pre-PR test window
+	// so new builds exercise the feature without the user having to flip
+	// the toggle — will revert to opt-in before merging upstream.
+	bool continuousRecal = true;
+	double continuousRecalIntervalSeconds = 60.0;  // 1 minute (test default)
 	double continuousRecalSampleHz = 10.0;          // sample ingestion rate
 	double continuousRecalMaxYawDeltaDeg = 2.0;     // reject suspicious shifts
 	double continuousRecalMaxTransDeltaM = 0.05;    // reject suspicious shifts
