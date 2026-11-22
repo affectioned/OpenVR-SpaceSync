@@ -1695,6 +1695,45 @@ static double WrapYawDelta(double degA, double degB)
 	return d;
 }
 
+// Pick a device to pair with the HMD for continuous recalibration samples.
+// In modes where the calibration's original target is still around (head
+// tracker on the headset), that's the right choice. In HMD Driven + No
+// Tracker, the original target was a controller held up during calibration
+// and put away afterwards — fall back to any body tracker from the same
+// tracking system. The rotation/translation we're re-measuring is between
+// the two tracking SPACES, so any pair of co-tracked devices works.
+static uint32_t PickContRecalTargetID(const CalibrationContext& ctx)
+{
+	if (ctx.targetID < vr::k_unMaxTrackedDeviceCount)
+	{
+		const auto& tp = ctx.devicePoses[ctx.targetID];
+		if (tp.bPoseIsValid && tp.eTrackingResult == vr::TrackingResult_Running_OK)
+			return ctx.targetID;
+	}
+	// Prefer a waist/chest tracker (FindBodyTracker already encodes the
+	// priority), fall back to any GenericTracker from the target tracking
+	// system that is Running_OK.
+	uint32_t body = FindBodyTracker();
+	if (body < vr::k_unMaxTrackedDeviceCount)
+	{
+		const auto& bp = ctx.devicePoses[body];
+		if (bp.bPoseIsValid && bp.eTrackingResult == vr::TrackingResult_Running_OK)
+			return body;
+	}
+	for (uint32_t id = 0; id < vr::k_unMaxTrackedDeviceCount; id++)
+	{
+		if (vr::VRSystem()->GetTrackedDeviceClass(id) != vr::TrackedDeviceClass_GenericTracker)
+			continue;
+		const auto& pp = ctx.devicePoses[id];
+		if (!pp.bPoseIsValid || pp.eTrackingResult != vr::TrackingResult_Running_OK)
+			continue;
+		if (!ctx.targetTrackingSystem.empty() && GetDeviceTrackingSystem(id) != ctx.targetTrackingSystem)
+			continue;
+		return id;
+	}
+	return vr::k_unTrackedDeviceIndexInvalid;
+}
+
 // Continuous recalibration — opt-in, slow, hard-bounded. Keeps a rolling
 // buffer of live HMD + target pose pairs while calibration is settled; at
 // the configured interval, runs the Kabsch + translation solve on that
@@ -1716,10 +1755,12 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 		return;
 	}
 	if (!ctx.lastCalibrationOk) return;
-	if (ctx.targetID >= vr::k_unMaxTrackedDeviceCount) return;
+
+	uint32_t sourceTargetID = PickContRecalTargetID(ctx);
+	if (sourceTargetID >= vr::k_unMaxTrackedDeviceCount) return;
 
 	auto& hp = ctx.devicePoses[vr::k_unTrackedDeviceIndex_Hmd];
-	auto& tp = ctx.devicePoses[ctx.targetID];
+	auto& tp = ctx.devicePoses[sourceTargetID];
 	if (!hp.bPoseIsValid || !tp.bPoseIsValid) return;
 	if (hp.eTrackingResult != vr::TrackingResult_Running_OK) return;
 	if (tp.eTrackingResult != vr::TrackingResult_Running_OK) return;
@@ -1770,13 +1811,23 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 
 	ctx.calibratedRotation = candidateRot;
 	ctx.calibratedTranslation = candidateTrans;
-	SendHmdTrackerCommand(vr::k_unTrackedDeviceIndex_Hmd, ctx.targetID, true);
+	// In HMD Driven + No Tracker + Follow the driver expects InvalidDeviceIndex
+	// for the trackerID (see ScanAndApplyProfile's noTrackerFollow branch).
+	// Match that so we don't accidentally wire a transient fallback tracker
+	// into the persistent HMD-driver relationship.
+	uint32_t applyTrackerID = (ctx.followSlamHmd && ctx.noHeadTracker)
+	    ? vr::k_unTrackedDeviceIndexInvalid
+	    : ctx.targetID;
+	SendHmdTrackerCommand(vr::k_unTrackedDeviceIndex_Hmd, applyTrackerID, true);
 	SaveProfile(ctx);
 	ctx.continuousRecalApplied++;
 
+	const char* sourceNote = (sourceTargetID == ctx.targetID)
+	    ? "original calibration target"
+	    : "body tracker fallback (HMD Driven + No Tracker)";
 	snprintf(buf, sizeof buf,
-		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm (#%u applied, %u rejected, %u attempted)\n",
-		yawDelta, transDeltaM * 100.0,
+		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm, via %s (#%u applied, %u rejected, %u attempted)\n",
+		yawDelta, transDeltaM * 100.0, sourceNote,
 		ctx.continuousRecalApplied, ctx.continuousRecalRejected, ctx.continuousRecalAttempted);
 	CalCtx.Log(buf);
 }
