@@ -1565,8 +1565,14 @@ void UserInterface::RenderFrameLink(const Status& status)
 	{
 		auto& g = perf::Global();
 		struct Row { const char* label; double avg, p95, last; double warnMs, badMs; };
+		// Thresholds target "are we dropping frames?", not "are we hitting
+		// a VR headset budget". The overlay renders at desktop vsync (14 ms
+		// at 72 Hz, 16 ms at 60 Hz), so reading orange at 11 ms was noise.
+		// Orange = below ~50 fps, red = below ~30 fps. The others stay
+		// absolute: a 10 ms calib tick, a 5 ms log write, or an 80 ms
+		// Kabsch really are problems regardless of refresh rate.
 		Row rows[] = {
-			{ "Main frame",   g.mainFrame.Avg(),       g.mainFrame.P95(),       g.mainFrame.Last(),       8.0,  12.0 },
+			{ "Main frame",   g.mainFrame.Avg(),       g.mainFrame.P95(),       g.mainFrame.Last(),       20.0, 33.0 },
 			{ "Calib tick",   g.calibrationTick.Avg(), g.calibrationTick.P95(), g.calibrationTick.Last(), 5.0,  10.0 },
 			{ "Overlay log",  g.overlayLog.Avg(),      g.overlayLog.P95(),      g.overlayLog.Last(),      2.0,  5.0  },
 			{ "Last Kabsch",  g.lastKabsch.Avg(),      g.lastKabsch.P95(),      g.lastKabsch.Last(),      40.0, 80.0 },
