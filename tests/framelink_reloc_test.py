@@ -106,10 +106,87 @@ def test_packet_size_matches_header():
     assert m, "Relocalize struct not found"
     body = m.group(1)
     assert "uint64_t captureTicks" in body and "float    translation[3]" in body and "float    rotation[4]" in body
-    pkt = svc.pack_relocalize(7, 123, (0.1, 0.2, 0.3), (1.0, 0.0, 0.0, 0.0))
-    assert len(pkt) == struct.calcsize("<IHHI") + 8 + 12 + 16, len(pkt)
+    m = re.search(r"struct FRAMELINK_PACKED RelocalizeExt\s*\{(.*?)\};", text, re.S)
+    assert m, "RelocalizeExt struct not found"
+    body = m.group(1)
+    assert "Relocalize base" in body and "uint32_t sources" in body
+    assert "float    slamTranslationM" in body and "float    slamRotationDeg" in body
+    for name, val in (("RelocSourcePose", svc.RELOC_SOURCE_POSE), ("RelocSourceSlamLog", svc.RELOC_SOURCE_SLAM_LOG)):
+        assert re.search(rf"{name}\s*=\s*1u << {val.bit_length() - 1}\b", text), name
+
+    pkt = svc.pack_relocalize(7, 123, (0.1, 0.2, 0.3), (1.0, 0.0, 0.0, 0.0),
+                              sources=svc.RELOC_SOURCE_SLAM_LOG, slam_translation_m=1.5, slam_rotation_deg=60.0)
+    base = struct.calcsize("<IHHI") + 8 + 12 + 16
+    assert len(pkt) == base + 12, len(pkt)
     magic, version, mtype, seq = struct.unpack_from("<IHHI", pkt)
     assert (magic, version, mtype, seq) == (svc.MAGIC, svc.VERSION, svc.MSG_RELOCALIZE, 7)
+    assert struct.unpack_from("<Iff", pkt, base) == (svc.RELOC_SOURCE_SLAM_LOG, 1.5, 60.0)
+
+
+# Lines as XRService wrote them on a Steam Frame (2026-11-24), journalctl -o cat.
+XR_LINES = [
+    "Started failing: Just for logging: Stricter criterion for successfull tracking.",
+    "SLAMConsole: [IMUFallback] Enabled, type: DIPr",
+    "SLAMConsole: [IMUFallback] Enabled, type: 3DoF",
+    "[DCU] [IMUFallback] Disabled with latest prediction:",
+    "SLAMConsole: [IMUFallback] Disabled",
+    "SLAMConsole: [Tracking] Internal reloc to previous map session (7322)",
+    "Releasing map-VIO jump; justRecoveryRelocalized: 1, translation: 0.472464, rotation: 60.987299",
+    "Large shown Map-VIO jump: shownT: 1.673187, shownR: 0.054275, diffT: 0.000000, diffR: 0.000000",
+]
+
+
+def test_slam_log_parsing():
+    clock = [100.0]
+    w = svc.SlamLogWatcher(clock=lambda: clock[0])
+    assert not w.fallback
+    w.feed_line(XR_LINES[0])
+    assert not w.fallback
+    w.feed_line(XR_LINES[1])
+    assert w.fallback
+    w.feed_line(XR_LINES[2])
+    assert w.fallback and w.fallback_changes == 1
+    w.feed_line(XR_LINES[3])
+    assert not w.fallback
+    w.feed_line(XR_LINES[4])
+    assert w.fallback_changes == 2
+    for line in XR_LINES[5:]:
+        w.feed_line(line)
+    jumps = w.take_jumps()
+    assert len(jumps) == 1, jumps   # the "Large shown" repeat is not a new jump
+    t, tm, rd = jumps[0]
+    assert (t, round(tm, 6), round(rd, 6)) == (100.0, 0.472464, 60.987299)
+    assert w.take_jumps() == []
+
+
+def test_reporter_sends_once_per_jump():
+    rep = svc.RelocReporter(match_secs=1.0)
+    step = (5, (0.4, 0.0, 0.2), (1.0, 0.0, 0.0, 0.0))
+    # pose first, SLAM log 40 ms later: one packet, from the pose
+    r = rep.on_pose_step(10.00, step)
+    assert r is not None and r["sources"] == svc.RELOC_SOURCE_POSE
+    assert rep.on_slam_jump(10.04, 6, 0.45, 2.0) is None
+    # SLAM log first, pose later: one packet, from the log
+    r = rep.on_slam_jump(20.00, 7, 1.67, 0.05)
+    assert r is not None and r["sources"] == svc.RELOC_SOURCE_SLAM_LOG and r["slam_translation_m"] == 1.67
+    assert rep.on_pose_step(20.03, step) is None
+    # far apart: two jumps
+    assert rep.on_pose_step(30.0, step) is not None
+    assert rep.on_slam_jump(32.0, 8, 0.5, 1.0) is not None
+
+
+def test_fallback_samples_become_inertial():
+    s = sample((1.0, 1.7, 2.0), q_yaw(10.0))
+    f = svc.mark_fallback(s)
+    assert f["flags"] & svc.FLAG_INERTIAL and not f["flags"] & svc.FLAG_POSITION
+    assert f["flags"] & svc.FLAG_ROTATION and f["confidence"] == 0.2
+    assert svc.mark_fallback(None) is None
+    # and the detector ignores them: a runaway + snap back during fallback
+    # (the 503 cm event in the 2026-11-24 test) is not reported
+    base = walking(120)
+    stream = base[:40] + [svc.mark_fallback(shifted(s, 0.0, (0.0, 0.0, 0.05 * k * k)))
+                          for k, s in enumerate(base[40:80])] + base[80:]
+    assert run(stream) == []
 
 
 def main():

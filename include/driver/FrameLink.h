@@ -46,6 +46,9 @@ namespace framelink
 		float    translation[3] = { 0, 0, 0 };
 		float    rotation[4] = { 1, 0, 0, 0 };
 		double   pcSeconds = 0.0;
+		uint32_t sources = 0;            // RelocSource bitmask
+		float    slamTranslationM = 0.0f;
+		float    slamRotationDeg = 0.0f;
 	};
 
 	class Listener

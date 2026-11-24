@@ -306,6 +306,37 @@ int main(int argc, char **argv)
         std::printf("ok: relocalize event -> HMD jump (first, no-repeat, stacked latest-wins, survives service restart)\n");
     }
 
+    // -- (2b) RelocalizeExt tail ----------------------------------------------
+    {
+        uint32_t cursor = 0, seq = 0;
+        framelink::RelocalizeEvent ev;
+        while (L.NextRelocalize(cursor, ev, seq)) {}   // drain (2)
+
+        // A bare Relocalize reads as pose-sourced.
+        SendRelocalize(70, 0.3f, 0.0f, 0.0f, port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        CHECK(L.NextRelocalize(cursor, ev, seq));
+        CHECK(ev.sources == framelink::RelocSourcePose);
+
+        framelink::RelocalizeExt m = {};
+        m.base.h.magic = framelink::Magic;
+        m.base.h.version = framelink::Version;
+        m.base.h.type = framelink::MsgRelocalize;
+        m.base.h.sequence = 71;
+        m.base.rotation[0] = 1.0f;
+        m.sources = framelink::RelocSourceSlamLog;
+        m.slamTranslationM = 1.673f;
+        m.slamRotationDeg = 0.054f;
+        SendRaw(&m, sizeof m, port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        CHECK(L.NextRelocalize(cursor, ev, seq));
+        CHECK(seq == 71);
+        CHECK(ev.sources == framelink::RelocSourceSlamLog);
+        CHECK(ev.slamTranslationM == 1.673f && ev.slamRotationDeg == 0.054f);
+
+        std::printf("ok: RelocalizeExt tail parsed, bare packet still accepted\n");
+    }
+
     // -- Stay Aligned gate uses the same policy with its own trust state ---
     // Mirrors StayAlignedStep's gate block exactly.
     {

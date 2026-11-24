@@ -24,10 +24,13 @@ import argparse
 import logging
 import math
 import os
+import re
 import signal
 import socket
 import struct
+import subprocess
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 
@@ -43,6 +46,10 @@ MSG_RELOCALIZE  = 4
 FLAG_POSITION   = 1 << 0
 FLAG_ROTATION   = 1 << 1
 FLAG_INERTIAL   = 1 << 2
+
+# Relocalize tail (RelocalizeExt in FrameLinkProtocol.h)
+RELOC_SOURCE_POSE     = 1 << 0
+RELOC_SOURCE_SLAM_LOG = 1 << 1
 
 log = logging.getLogger("framelink")
 
@@ -81,12 +88,15 @@ def pack_gravity(seq: int, capture_ticks: int, direction, conf: float) -> bytes:
     )
 
 
-def pack_relocalize(seq: int, capture_ticks: int, translation, rotation) -> bytes:
+def pack_relocalize(seq: int, capture_ticks: int, translation, rotation,
+                    sources: int = RELOC_SOURCE_POSE, slam_translation_m: float = 0.0,
+                    slam_rotation_deg: float = 0.0) -> bytes:
     return (
         _hdr(MSG_RELOCALIZE, seq)
         + struct.pack("<Q", capture_ticks)
         + struct.pack("<fff", *translation)
         + struct.pack("<ffff", *rotation)
+        + struct.pack("<Iff", sources, slam_translation_m, slam_rotation_deg)
     )
 
 
@@ -180,6 +190,111 @@ class RelocDetector:
             self.cand = (sample["capture_ticks"], shift[0], shift[1])
         self.prev = (t, sample)
         return out
+
+
+# -------- Frame SLAM service log ---------------------------------------------
+#
+# With the cameras blocked the Frame's SLAM service falls back to IMU-only
+# tracking, but OpenVR keeps reporting Running_OK while the position runs
+# away (5 m in 9 s in a 2026-11-24 test). The service logs the fallback and
+# its relocalizations to the journal, readable without root. The text is
+# undocumented and may change with SteamOS updates: if nothing matches, the
+# daemon behaves as before (pose-based detection only).
+
+class SlamLogWatcher:
+    FALLBACK_ON = "[IMUFallback] Enabled"
+    FALLBACK_OFF = "[IMUFallback] Disabled"
+    JUMP = re.compile(r"Releasing map-VIO jump; justRecoveryRelocalized: (\d+), "
+                      r"translation: ([-+0-9.eE]+), rotation: ([-+0-9.eE]+)")
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.fallback = False
+        self.fallback_changes = 0
+        self.lock = threading.Lock()
+        self.jumps = []        # (t, translation m, rotation deg)
+        self.proc = None
+
+    def feed_line(self, line: str) -> None:
+        with self.lock:
+            if self.FALLBACK_ON in line:
+                if not self.fallback:
+                    self.fallback_changes += 1
+                self.fallback = True
+            elif self.FALLBACK_OFF in line:
+                if self.fallback:
+                    self.fallback_changes += 1
+                self.fallback = False
+            else:
+                m = self.JUMP.search(line)
+                if m:
+                    self.jumps.append((self.clock(), float(m.group(2)), float(m.group(3))))
+
+    def take_jumps(self):
+        with self.lock:
+            out, self.jumps = self.jumps, []
+            return out
+
+    def start(self) -> bool:
+        try:
+            self.proc = subprocess.Popen(
+                ["journalctl", "-f", "-n", "0", "-o", "cat", "SYSLOG_IDENTIFIER=XRService"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except OSError as e:
+            log.info("SLAM log watcher off: %s", e)
+            return False
+        threading.Thread(target=self._run, name="slam-log", daemon=True).start()
+        log.info("following XRService journal for IMU fallback / relocalizations")
+        return True
+
+    def _run(self) -> None:
+        for line in self.proc.stdout:
+            self.feed_line(line)
+        log.warning("XRService journal follower exited; IMU fallback detection off")
+        with self.lock:
+            self.fallback = False
+
+    def stop(self) -> None:
+        if self.proc is not None:
+            self.proc.terminate()
+
+
+class RelocReporter:
+    """Merges the pose detector and the SLAM log into one Relocalize per jump.
+    Whichever source sees it first sends; the other one within `match_secs`
+    is taken as the same jump and only logged."""
+
+    def __init__(self, match_secs: float = 1.0):
+        self.match_secs = match_secs
+        self.last_pose = -1e9
+        self.last_slam = -1e9
+
+    def on_pose_step(self, now: float, step):
+        """Returns pack_relocalize kwargs, or None if already reported."""
+        matched = now - self.last_slam < self.match_secs
+        self.last_pose = now
+        if matched:
+            return None
+        ticks, trans, rot = step
+        return dict(capture_ticks=ticks, translation=trans, rotation=rot,
+                    sources=RELOC_SOURCE_POSE)
+
+    def on_slam_jump(self, now: float, ticks: int, translation_m: float, rotation_deg: float):
+        matched = now - self.last_pose < self.match_secs
+        self.last_slam = now
+        if matched:
+            return None
+        return dict(capture_ticks=ticks, translation=(0.0, 0.0, 0.0), rotation=(1.0, 0.0, 0.0, 0.0),
+                    sources=RELOC_SOURCE_SLAM_LOG, slam_translation_m=translation_m,
+                    slam_rotation_deg=rotation_deg)
+
+
+def mark_fallback(sample):
+    """Rewrite a pose taken during IMU fallback as inertial-only: rotation is
+    still usable, position is dead reckoning."""
+    if sample is None:
+        return None
+    return dict(sample, flags=(sample["flags"] & ~FLAG_POSITION) | FLAG_INERTIAL, confidence=0.2)
 
 
 # -------- Frame clock ---------------------------------------------------------
@@ -531,7 +646,7 @@ def _pose_moved(a, b, pos_eps: float, ang_eps_quat: float) -> bool:
 
 
 def run(host: str, port: int, hz: float, backends: list[str], product: str,
-        efficient: bool, idle_hz: float) -> None:
+        efficient: bool, idle_hz: float, use_slam_log: bool = True) -> None:
     backend = choose_backend(backends)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -569,6 +684,17 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
     reloc = RelocDetector() if backend.raw_space else None
     if reloc is None:
         log.info("relocalization detection off: backend %s doesn't read raw poses", backend.name)
+    reporter = RelocReporter()
+    slam_log = SlamLogWatcher() if use_slam_log else None
+    if slam_log is not None and not slam_log.start():
+        slam_log = None
+    fallback_logged = False
+
+    def send_reloc(r) -> None:
+        nonlocal seq, relocs_sent
+        sock.sendto(pack_relocalize(seq, **r), addr)
+        seq += 1
+        relocs_sent += 1
 
     # Motion-gate state: when the HMD stops moving, drop to idle_hz.
     last_sample_tuple = None   # (pos3, quat4) of the last *sent* pose
@@ -596,15 +722,29 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
 
             if now >= next_t:
                 sample = backend.poll_hmd()
+                in_fallback = slam_log is not None and slam_log.fallback
+                if in_fallback != fallback_logged:
+                    log.info("IMU fallback %s", "started: poses sent as inertial-only" if in_fallback else "ended")
+                    fallback_logged = in_fallback
+                if in_fallback:
+                    sample = mark_fallback(sample)
+
                 step = reloc.feed(now, sample) if reloc is not None else None
                 if step is not None:
                     ticks, trans, rot = step
-                    sock.sendto(pack_relocalize(seq, ticks, trans, rot), addr)
-                    seq += 1
-                    relocs_sent += 1
-                    log.info("relocalization: origin shift %.1f cm / %.1f deg",
+                    r = reporter.on_pose_step(now, step)
+                    if r is not None:
+                        send_reloc(r)
+                    log.info("relocalization (raw pose%s): origin shift %.1f cm / %.1f deg",
+                             "" if r is not None else ", already reported from SLAM log",
                              100.0 * math.sqrt(sum(c * c for c in trans)),
                              math.degrees(_q_angle(rot)))
+                for _t, tm, rd in (slam_log.take_jumps() if slam_log is not None else ()):
+                    r = reporter.on_slam_jump(now, now_ticks_ns(), tm, rd)
+                    if r is not None:
+                        send_reloc(r)
+                    log.info("relocalization (SLAM log%s): %.1f cm / %.1f deg",
+                             "" if r is not None else ", already reported from raw pose", 100.0 * tm, rd)
                 if sample is not None:
                     pos = sample["pos"]; quat = sample["quat"]
                     moved = (last_sample_tuple is None or
@@ -666,6 +806,8 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
     finally:
         sock.close()
         backend.shutdown()
+        if slam_log is not None:
+            slam_log.stop()
         log.info("done — poses sent=%d missed=%d skipped=%d relocs=%d",
                  pose_sent, pose_missed, pose_skipped, relocs_sent)
 
@@ -678,6 +820,8 @@ def main() -> None:
                    help="active pose rate while the head is moving (default 30)")
     p.add_argument("--idle-hz", type=float, default=5.0,
                    help="pose rate once the head has been still ~1s (default 5)")
+    p.add_argument("--no-slam-log", action="store_true",
+                   help="don't follow the XRService journal for IMU fallback / relocalizations")
     p.add_argument("--no-efficient", action="store_true",
                    help="disable the motion-gated rate drop; stream at --hz regardless")
     p.add_argument("--backends", default="openvr,openxr,stub",
@@ -696,7 +840,8 @@ def main() -> None:
 
     run(args.host, args.port, args.hz,
         [b.strip() for b in args.backends.split(",")],
-        args.product, efficient=not args.no_efficient, idle_hz=args.idle_hz)
+        args.product, efficient=not args.no_efficient, idle_hz=args.idle_hz,
+        use_slam_log=not args.no_slam_log)
 
 
 if __name__ == "__main__":
