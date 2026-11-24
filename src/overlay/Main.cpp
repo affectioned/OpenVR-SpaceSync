@@ -605,6 +605,30 @@ int main(int argc, char** argv)
                 BeginClose();
                 break;
             }
+            else if (sys_event.eventType == vr::VREvent_ChaperoneUniverseHasChanged
+                  || sys_event.eventType == vr::VREvent_StandingZeroPoseReset
+                  || sys_event.eventType == vr::VREvent_SeatedZeroPoseReset)
+            {
+                // Forwarded to the driver, which logs them next to Stay
+                // Aligned's headset jumps.
+                uint64_t universe = 0;
+                bool bySystemMenu = false;
+                char note[96];
+                if (sys_event.eventType == vr::VREvent_ChaperoneUniverseHasChanged)
+                {
+                    universe = sys_event.data.chaperone.m_nCurrentUniverse;
+                    snprintf(note, sizeof note, "chaperone: universe changed (universe %llu)", (unsigned long long)universe);
+                }
+                else if (sys_event.eventType == vr::VREvent_StandingZeroPoseReset)
+                    snprintf(note, sizeof note, "chaperone: standing zero pose reset");
+                else
+                {
+                    bySystemMenu = sys_event.data.seatedZeroPoseReset.bResetBySystemMenu;
+                    snprintf(note, sizeof note, "chaperone: seated zero pose reset%s", bySystemMenu ? " (system menu)" : "");
+                }
+                lighthouse::Note(note);
+                SendTrackingSpaceEvent(sys_event.eventType, universe, bySystemMenu);
+            }
         }
 
         while (!g_desktopPreview && g_overlay->Handle() != vr::k_ulOverlayHandleInvalid && vr::VROverlay()->PollNextOverlayEvent(g_overlay->Handle(), &vr_event, sizeof(vr_event)))

@@ -765,6 +765,23 @@ void SendUniverseLock()
 	}
 }
 
+void SendTrackingSpaceEvent(uint32_t eventType, uint64_t universeId, bool bySystemMenu)
+{
+	protocol::Request req(protocol::RequestTrackingSpaceEvent);
+	req.trackingSpaceEvent.eventType = eventType;
+	req.trackingSpaceEvent.universeId = universeId;
+	req.trackingSpaceEvent.bySystemMenu = bySystemMenu;
+
+	try
+	{
+		Driver.SendBlocking(req);
+	}
+	catch (const std::runtime_error &e)
+	{
+		std::cerr << "Failed to send tracking space event: " << e.what() << std::endl;
+	}
+}
+
 static Eigen::Matrix3d CalibrationMatrix(const CalibrationContext &ctx)
 {
 	Eigen::Vector3d e = ctx.calibratedRotation * EIGEN_PI / 180.0;

@@ -447,6 +447,9 @@ namespace stay
 		bool jump = false;
 		bool follow = false;
 		bool reverted = false;
+		// The classifier wanted to follow, but the caller flagged the jump as a
+		// likely SLAM relocalization, so it took the held path instead.
+		bool postReloc = false;
 		Frame J;
 		double T = 0.0;
 		double lambda = 0.0;
@@ -535,7 +538,7 @@ namespace stay
 			accumReset(0.0);
 		}
 
-		Event step(double t, const vr::HmdQuaternion_t& headRot, const vr::HmdVector3d_t& headPos, const Hip& hip)
+		Event step(double t, const vr::HmdQuaternion_t& headRot, const vr::HmdVector3d_t& headPos, const Hip& hip, bool suspectReloc = false)
 		{
 			Event ev;
 			double headYaw = quaternionYawRad(headRot);
@@ -568,7 +571,7 @@ namespace stay
 					ev.jump = true;
 					ev.J = { f.yaw, f.d };
 					ev.T = f.T;
-					handleJump(t, f, ev);
+					handleJump(t, f, ev, suspectReloc);
 				}
 			}
 
@@ -688,7 +691,7 @@ namespace stay
 			rejectRun = 0;
 		}
 
-		void handleJump(double t, const StepFit& f, Event& ev)
+		void handleJump(double t, const StepFit& f, Event& ev, bool suspectReloc)
 		{
 			const Frame& J = ev.J;
 			vr::HmdVector3d_t headPred = f.before;
@@ -712,7 +715,11 @@ namespace stay
 			double llRc = mx + std::log(0.5 * std::exp(a - mx) + 0.5 * std::exp(c - mx));
 			double logDet = std::log((sRcY * sRcP * sRcP) / (sRlY * sRlP * sRlP));
 			ev.lambda = 0.5 * mRl + llRc - logDet + std::log(1.5 / 6.7);
-			ev.follow = ev.lambda > 0.0 || std::fabs(J.yaw) > Rad(20.0);
+			bool wantFollow = ev.lambda > 0.0 || std::fabs(J.yaw) > Rad(20.0);
+			// Decided here, not by the caller: once step() returns, the follow
+			// branch below has already moved the EKF and the stand-height refs.
+			ev.postReloc = wantFollow && suspectReloc;
+			ev.follow = wantFollow && !ev.postReloc;
 
 			if (ev.follow)
 			{

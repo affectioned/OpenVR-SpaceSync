@@ -56,6 +56,7 @@ public:
 	void SetSlamSync(const protocol::SetSlamSync &cmd);
 	void SetOneEuro(const protocol::SetOneEuro &cmd);
 	void SetUniverseLock(const protocol::SetUniverseLock &cmd);
+	void NoteTrackingSpaceEvent(const protocol::TrackingSpaceEvent &ev);
 	void GetStatus(protocol::DriverStatus &status);
 	void GetFrameLinkSample(uint32_t deviceId, protocol::FrameLinkSample &out);
 	void GetFrameLinkStatus(protocol::FrameLinkStatus &out);
@@ -136,6 +137,15 @@ private:
 	// relocalization, not a user recenter — Stay Aligned's "followed
 	// (recenter)" decision gets overridden to "held" during that window.
 	double frameLinkStayLowConfTime = -1e9;
+
+	// Shadow data, not used for decisions yet: when SteamVR last reported a
+	// universe change / zero-pose reset (forwarded by the overlay), and the
+	// last Stay Aligned jump, so the log can show how the two line up.
+	// Written from the IPC thread and the pose thread, hence atomics.
+	std::atomic<double> spaceUniverseChangeTime{ -1e9 };
+	std::atomic<double> spaceZeroPoseResetTime{ -1e9 };
+	std::atomic<double> stayLastJumpTime{ -1e9 };
+	std::atomic<int> stayLastJumpDecision{ 0 }; // 1 followed, 2 held, 3 held post-relocalization
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };
