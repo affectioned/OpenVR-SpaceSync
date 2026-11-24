@@ -148,7 +148,7 @@ private:
 	std::atomic<int> stayLastJumpDecision{ 0 }; // 1 followed, 2 held, 3 held post-relocalization
 	// Pose thread only.
 	stay::Frame stayLastJumpShift;
-	double frameRelocTime = -1e9;           // last Frame relocalize message, also shadow-only
+	double frameRelocTime = -1e9;           // last Frame relocalize message; arms the Stay Aligned guard
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };

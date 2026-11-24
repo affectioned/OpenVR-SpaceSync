@@ -97,6 +97,22 @@ namespace framelink
 		float    rotation[4];      // wxyz; rotation applied to the frame origin
 	};
 
+	// Optional tail on a Relocalize packet. Receivers check the packet length;
+	// a bare 48-byte Relocalize is still valid (sources = RelocSourcePose).
+	enum RelocSource : uint32_t
+	{
+		RelocSourcePose    = 1u << 0,  // translation/rotation measured from the raw pose stream
+		RelocSourceSlamLog = 1u << 1,  // reported by the Frame's SLAM service; slam* fields valid
+	};
+
+	struct FRAMELINK_PACKED RelocalizeExt
+	{
+		Relocalize base;
+		uint32_t sources;          // RelocSource bitmask
+		float    slamTranslationM; // magnitude only, as the SLAM service reports it
+		float    slamRotationDeg;
+	};
+
 	struct FRAMELINK_PACKED ClockProbe
 	{
 		Header   h;

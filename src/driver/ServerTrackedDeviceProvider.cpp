@@ -823,14 +823,19 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 
 	if (!stayGated)
 	{
-		// Guard against post-relocalization jumps masquerading as recenters.
-		// If the Frame was reporting low confidence or inertial-only within
-		// the last 2 s, a "follow" decision almost certainly reflects SLAM
-		// re-acquiring its world after the HMD was off / blocked, not the
-		// user asking for a recenter, so the aligner takes the held path.
-		// (Observed on 2026-11-22: a 110 cm / 28 deg post-doff jump was
-		// followed as a recenter and desynced the entire session.)
-		bool suspectReloc = nowSeconds - frameLinkStayLowConfTime < 2.0;
+		// Guard against relocalization jumps masquerading as recenters; the
+		// aligner takes the held path for these. (Observed on 2026-11-22: a
+		// 110 cm / 28 deg post-doff jump was followed as a recenter and
+		// desynced the entire session.) Two signals:
+		//  - the Frame was coasting (low confidence / inertial-only) within
+		//    the last 2 s: SLAM re-acquiring after the HMD was off or blocked;
+		//  - the Frame reported a relocalization within the last 1.5 s. It
+		//    only reports steps in raw poses or from its SLAM service, which a
+		//    recenter never produces. Covers recoveries that land well after
+		//    coasting ends (5.3 s in a 2026-11-24 test).
+		bool coastingReloc = nowSeconds - frameLinkStayLowConfTime < 2.0;
+		bool reportedReloc = nowSeconds - frameRelocTime < 1.5;
+		bool suspectReloc = coastingReloc || reportedReloc;
 		stay::Event ev = stayAligner.step(hmdTime, rawRotation, vecFromArray(rawPosition), hip, suspectReloc);
 
 		if (ev.jump)
@@ -851,7 +856,8 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 			char uBuf[32], zBuf[32], fBuf[32];
 			LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s [universe change %s, zero-pose reset %s, Frame relocalization %s]",
 				stay::Deg(ev.J.yaw), vecNorm(ev.J.t) * 100.0, ev.T, ev.yawAfterDeg, ev.lambda,
-				ev.postReloc                ? "held (post-relocalization, Frame was coasting)"
+				ev.postReloc && reportedReloc ? "held (relocalization reported by the Frame)"
+				: ev.postReloc              ? "held (post-relocalization, Frame was coasting)"
 				: ev.follow                 ? "followed (recenter)"
 				: ev.reverted               ? "held, earlier hiccup reverted"
 				                            : "held (hiccup)",
@@ -1374,12 +1380,13 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 					double jumpYaw = 0.0;
 					vr::HmdVector3d_t jumpTranslation = { 0, 0, 0 };
 
-					// Issue #18 — the Frame service reports SLAM origin shifts it sees in
-					// its raw pose stream (recenters don't move raw poses, so these are
-					// never user recenters). Logged only for now: the Frame's raw space
-					// isn't verified to match ours, and the message can arrive before
-					// or after Stay Aligned detects the same step. The log lines pair it
-					// with the nearest Stay Aligned jump so a session shows both.
+					// Issue #18 — the Frame service reports SLAM origin shifts, from steps
+					// in its raw pose stream and/or its SLAM service's own log. Neither
+					// fires on a user recenter. Only the timing is used (Stay Aligned
+					// holds a jump it detects within 1.5 s); the shift itself isn't
+					// applied, the Frame's raw space isn't verified to match ours. The
+					// log pairs it with the nearest Stay Aligned jump, which shows when
+					// the message lost the race to the PC-side detector.
 					framelink::RelocalizeEvent relocEv;
 					uint32_t relocSeq = 0;
 					if (frameLink.NextRelocalize(frameLinkRelocCursor, relocEv, relocSeq))
@@ -1402,8 +1409,14 @@ bool ServerTrackedDeviceProvider::HandleDevicePoseUpdated(uint32_t openVRID, vr:
 								decision == 1 ? "followed" : decision == 3 ? "held (post-relocalization)" : "held");
 						else
 							std::snprintf(jumpBuf, sizeof jumpBuf, "no headset jump in the last 5 s");
-						LOG("Frame relocalization seq=%u: origin shift %.1f cm / %.1f deg yaw (Frame raw space, not applied), %s",
-							relocSeq, shiftM * 100.0, yaw * 180.0 / POSE_PI, jumpBuf);
+						char shiftBuf[96] = "";
+						if (relocEv.sources & framelink::RelocSourceSlamLog)
+							std::snprintf(shiftBuf, sizeof shiftBuf, "SLAM service %.1f cm / %.1f deg",
+								relocEv.slamTranslationM * 100.0, (double)relocEv.slamRotationDeg);
+						if (relocEv.sources & framelink::RelocSourcePose)
+							std::snprintf(shiftBuf + std::strlen(shiftBuf), sizeof shiftBuf - std::strlen(shiftBuf),
+								"%sraw pose %.1f cm / %.1f deg yaw", shiftBuf[0] ? ", " : "", shiftM * 100.0, yaw * 180.0 / POSE_PI);
+						LOG("Frame relocalization seq=%u: %s (not applied), %s", relocSeq, shiftBuf, jumpBuf);
 					}
 
 					if (freshPose && DetectHmdKinematicJump(pose, rawRotation, rawPosition, hmdTime))

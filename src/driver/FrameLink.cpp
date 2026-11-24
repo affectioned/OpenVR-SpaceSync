@@ -210,11 +210,18 @@ namespace framelink
 			std::memcpy(relocQueue[slot].translation, msg.translation, sizeof relocQueue[slot].translation);
 			std::memcpy(relocQueue[slot].rotation, msg.rotation, sizeof relocQueue[slot].rotation);
 			relocQueue[slot].pcSeconds = nowSec;
+			relocQueue[slot].sources = RelocSourcePose;
+			if (len >= (int)sizeof(RelocalizeExt))
+			{
+				RelocalizeExt ext;
+				std::memcpy(&ext, buf, sizeof ext);
+				relocQueue[slot].sources = ext.sources;
+				relocQueue[slot].slamTranslationM = ext.slamTranslationM;
+				relocQueue[slot].slamRotationDeg = ext.slamRotationDeg;
+			}
 			relocSeq[slot] = h.sequence;
 			relocWrite++;
-			LOG("FrameLink: relocalize seq=%u shift %.3f m", h.sequence,
-				std::sqrt((double)msg.translation[0] * msg.translation[0] + (double)msg.translation[1] * msg.translation[1]
-					+ (double)msg.translation[2] * msg.translation[2]));
+			LOG("FrameLink: relocalize seq=%u sources=%u", h.sequence, relocQueue[slot].sources);
 			break;
 		}
 		case MsgClockPong:
