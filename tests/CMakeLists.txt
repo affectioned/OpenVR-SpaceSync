@@ -26,6 +26,16 @@ endfunction()
 spacesync_framelink_test(framelink_sim_test)
 spacesync_framelink_test(framelink_background_test)
 
+# Header-only Stay Aligned logic (StayAligned.h + PoseMath.h).
+add_executable(stay_aligned_test stay_aligned_test.cpp)
+target_include_directories(stay_aligned_test
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}/include/driver"
+        "${CMAKE_SOURCE_DIR}/3rdparty/OpenVR/headers"
+)
+set_target_properties(stay_aligned_test PROPERTIES CXX_STANDARD 20)
+add_test(NAME stay_aligned_test COMMAND stay_aligned_test)
+
 # Pure-math calibration tests (CalibrationMath.h). Separate from the
 # framelink helper because it needs the overlay include path + Eigen,
 # not the driver include path or Winsock.

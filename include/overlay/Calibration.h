@@ -255,4 +255,5 @@ void LoadChaperoneBounds();
 void ApplyChaperoneBounds();
 void SendOneEuroParams();
 void SendUniverseLock();
+void SendTrackingSpaceEvent(uint32_t eventType, uint64_t universeId, bool bySystemMenu);
 void KeepCalibrationSpotAfterRotationEdit(const Eigen::Vector3d &previousRotation);

@@ -13,7 +13,7 @@
 
 namespace protocol
 {
-	const uint32_t Version = 21;
+	const uint32_t Version = 22;
 
 	enum RequestType
 	{
@@ -27,6 +27,7 @@ namespace protocol
 		RequestSetUniverseLock,
 		RequestGetFrameLinkSample,
 		RequestGetFrameLinkStatus,
+		RequestTrackingSpaceEvent,
 	};
 
 	enum ResponseType
@@ -131,6 +132,15 @@ namespace protocol
 		uint32_t command;
 	};
 
+	// A SteamVR tracking-space VREvent the overlay saw (universe change,
+	// standing/seated zero pose reset). The driver can't poll these itself.
+	struct TrackingSpaceEvent
+	{
+		uint32_t eventType;      // vr::EVREventType
+		uint64_t universeId;     // VREvent_Chaperone_t::m_nCurrentUniverse, 0 otherwise
+		bool bySystemMenu;       // VREvent_SeatedZeroPoseReset_t::bResetBySystemMenu
+	};
+
 	struct DriverStatus
 	{
 		bool driftValid;
@@ -224,6 +234,7 @@ namespace protocol
 			SetOneEuro setOneEuro;
 			SetUniverseLock setUniverseLock;
 			GetFrameLinkSample getFrameLinkSample;
+			TrackingSpaceEvent trackingSpaceEvent;
 		};
 
 		Request() : type(RequestInvalid) { }

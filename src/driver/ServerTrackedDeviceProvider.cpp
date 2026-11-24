@@ -360,6 +360,39 @@ void ServerTrackedDeviceProvider::SetUniverseLock(const protocol::SetUniverseLoc
 	universeLock.configure(cmd.enabled, cmd.calibrating, cmd.command);
 }
 
+void ServerTrackedDeviceProvider::NoteTrackingSpaceEvent(const protocol::TrackingSpaceEvent& ev)
+{
+	LARGE_INTEGER now, freq;
+	QueryPerformanceCounter(&now);
+	QueryPerformanceFrequency(&freq);
+	double nowSeconds = now.QuadPart / (double)freq.QuadPart;
+
+	const char* what = "tracking space event";
+	if (ev.eventType == vr::VREvent_ChaperoneUniverseHasChanged)
+	{
+		spaceUniverseChangeTime = nowSeconds;
+		what = "universe changed";
+	}
+	else if (ev.eventType == vr::VREvent_StandingZeroPoseReset || ev.eventType == vr::VREvent_SeatedZeroPoseReset)
+	{
+		spaceZeroPoseResetTime = nowSeconds;
+		what = ev.eventType == vr::VREvent_StandingZeroPoseReset ? "standing zero pose reset" : "seated zero pose reset";
+	}
+
+	// The event can land on either side of the jump it belongs to, so also
+	// log how long ago the last Stay Aligned jump was and what it decided.
+	double ms = (nowSeconds - stayLastJumpTime) * 1000.0;
+	int decision = stayLastJumpDecision;
+	char jumpBuf[96];
+	if (ms < 5000.0)
+		std::snprintf(jumpBuf, sizeof jumpBuf, "%.0f ms after a headset jump that was %s", ms,
+			decision == 1 ? "followed" : decision == 3 ? "held (post-relocalization)" : "held");
+	else
+		std::snprintf(jumpBuf, sizeof jumpBuf, "no headset jump in the last 5 s");
+	LOG("Tracking space: %s (universe %llu%s), %s", what, (unsigned long long)ev.universeId,
+		ev.bySystemMenu ? ", from system menu" : "", jumpBuf);
+}
+
 void ServerTrackedDeviceProvider::UpdateDrift(const vr::HmdQuaternion_t& correctedRotation, const double(&correctedPosition)[3],
 	const vr::HmdQuaternion_t& rawRotation, const double(&rawPosition)[3], double confidence, double quality)
 {
@@ -790,30 +823,38 @@ void ServerTrackedDeviceProvider::StayAlignedStep(double nowSeconds, double hmdT
 
 	if (!stayGated)
 	{
-		stay::Event ev = stayAligner.step(hmdTime, rawRotation, vecFromArray(rawPosition), hip);
+		// Guard against post-relocalization jumps masquerading as recenters.
+		// If the Frame was reporting low confidence or inertial-only within
+		// the last 2 s, a "follow" decision almost certainly reflects SLAM
+		// re-acquiring its world after the HMD was off / blocked, not the
+		// user asking for a recenter, so the aligner takes the held path.
+		// (Observed on 2026-11-22: a 110 cm / 28 deg post-doff jump was
+		// followed as a recenter and desynced the entire session.)
+		bool suspectReloc = nowSeconds - frameLinkStayLowConfTime < 2.0;
+		stay::Event ev = stayAligner.step(hmdTime, rawRotation, vecFromArray(rawPosition), hip, suspectReloc);
 
 		if (ev.jump)
 		{
-			// Guard against post-relocalization jumps masquerading as
-			// recenters. If the Frame was reporting low confidence or
-			// inertial-only within the last 2 s, an "ev.follow" decision
-			// almost certainly reflects SLAM re-acquiring its world after
-			// the HMD was off / blocked, not the user asking for a
-			// recenter. Override to held in that window. (Observed on
-			// 2026-11-22: a 110 cm / 28 deg post-doff jump was followed
-			// as a recenter and desynced the entire session.)
-			bool postReloc = ev.follow
-			              && (nowSeconds - frameLinkStayLowConfTime < 2.0);
-			if (postReloc)
-				ev.follow = false;
 			if (ev.follow)
 				RebaseDrift(ev.J);
-			LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s",
+			stayLastJumpTime = nowSeconds;
+			stayLastJumpDecision = ev.postReloc ? 3 : ev.follow ? 1 : 2;
+
+			auto since = [&](double t, char* buf, size_t n) -> const char*
+			{
+				double ms = (nowSeconds - t) * 1000.0;
+				if (ms < 5000.0) std::snprintf(buf, n, "%.0f ms before", ms);
+				else std::snprintf(buf, n, "none in 5 s");
+				return buf;
+			};
+			char uBuf[32], zBuf[32];
+			LOG("Stay Aligned: headset jump %.2f deg / %.1f cm (score %.0f, yaw after %.1f deg, recenter evidence %+.1f) -> %s [universe change %s, zero-pose reset %s]",
 				stay::Deg(ev.J.yaw), vecNorm(ev.J.t) * 100.0, ev.T, ev.yawAfterDeg, ev.lambda,
-				postReloc                   ? "held (post-relocalization, Frame was coasting)"
+				ev.postReloc                ? "held (post-relocalization, Frame was coasting)"
 				: ev.follow                 ? "followed (recenter)"
 				: ev.reverted               ? "held, earlier hiccup reverted"
-				                            : "held (hiccup)");
+				                            : "held (hiccup)",
+				since(spaceUniverseChangeTime, uBuf, sizeof uBuf), since(spaceZeroPoseResetTime, zBuf, sizeof zBuf));
 		}
 		if (ev.rescueChecked)
 			LOG("Stay Aligned: alignment check after headset pause: hip mismatch %.1f cm, yaw mismatch %.1f deg, pose looked re-centred %s -> %s",

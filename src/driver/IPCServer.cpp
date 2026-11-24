@@ -54,6 +54,11 @@ void IPCServer::HandleRequest(const protocol::Request &request, protocol::Respon
 		response.type = protocol::ResponseFrameLinkStatus;
 		break;
 
+	case protocol::RequestTrackingSpaceEvent:
+		driver->NoteTrackingSpaceEvent(request.trackingSpaceEvent);
+		response.type = protocol::ResponseSuccess;
+		break;
+
 	default:
 		LOG("Invalid IPC request: %d", request.type);
 		break;

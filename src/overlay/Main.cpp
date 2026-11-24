@@ -636,12 +636,29 @@ int main(int argc, char** argv)
                 // emits this on room-setup save, universe switch, and roomscale
                 // vs standing changes.
                 LoadChaperoneBounds();
-                lighthouse::Note(
-                    sys_event.eventType == vr::VREvent_ChaperoneUniverseHasChanged
-                        ? "chaperone: universe changed, bounds reloaded"
-                    : sys_event.eventType == vr::VREvent_ChaperoneSettingsHaveChanged
+                if (sys_event.eventType == vr::VREvent_ChaperoneUniverseHasChanged)
+                {
+                    char note[96];
+                    snprintf(note, sizeof note, "chaperone: universe changed (universe %llu), bounds reloaded",
+                        (unsigned long long)sys_event.data.chaperone.m_nCurrentUniverse);
+                    lighthouse::Note(note);
+                    // The driver logs these next to Stay Aligned's headset jumps.
+                    SendTrackingSpaceEvent(sys_event.eventType, sys_event.data.chaperone.m_nCurrentUniverse, false);
+                }
+                else
+                    lighthouse::Note(sys_event.eventType == vr::VREvent_ChaperoneSettingsHaveChanged
                         ? "chaperone: settings changed, bounds reloaded"
                         : "chaperone: bounds changed, reloaded");
+            }
+            else if (sys_event.eventType == vr::VREvent_StandingZeroPoseReset
+                  || sys_event.eventType == vr::VREvent_SeatedZeroPoseReset)
+            {
+                bool bySystemMenu = sys_event.eventType == vr::VREvent_SeatedZeroPoseReset
+                    && sys_event.data.seatedZeroPoseReset.bResetBySystemMenu;
+                lighthouse::Note(sys_event.eventType == vr::VREvent_StandingZeroPoseReset
+                    ? "chaperone: standing zero pose reset"
+                    : bySystemMenu ? "chaperone: seated zero pose reset (system menu)" : "chaperone: seated zero pose reset");
+                SendTrackingSpaceEvent(sys_event.eventType, 0, bySystemMenu);
             }
         }
 
