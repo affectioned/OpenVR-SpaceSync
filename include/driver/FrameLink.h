@@ -63,9 +63,11 @@ namespace framelink
 		bool LatestPose(uint32_t deviceId, double maxAgeSeconds, PoseSnapshot& out) const;
 		bool LatestGravity(double maxAgeSeconds, GravitySnapshot& out) const;
 
-		// Latest relocalize event, strictly newer than the sequence the caller has seen.
-		// Starting value for `lastSeq` is 0. The event's own sequence is returned via `outSeq`.
-		bool NextRelocalize(uint32_t& lastSeq, RelocalizeEvent& out, uint32_t& outSeq) const;
+		// Latest relocalize event received since the caller's `cursor` (start at 0);
+		// stacked events collapse to the newest. Counted by arrival, not by
+		// Header.sequence, which restarts at 0 whenever the Frame service does.
+		// The event's own sequence is returned via `outSeq` for logging.
+		bool NextRelocalize(uint32_t& cursor, RelocalizeEvent& out, uint32_t& outSeq) const;
 
 		// For logging / UI.
 		std::string PeerDescription() const;
@@ -102,9 +104,8 @@ namespace framelink
 		PoseSnapshot poses[MaxPoseDevices];
 		GravitySnapshot gravity;
 		RelocalizeEvent relocQueue[8];
-		uint32_t relocSeq[8] = {};    // Header.sequence of each stored event
-		uint32_t relocWrite = 0;      // next write index
-		uint32_t relocLast = 0;       // highest sequence seen so far
+		uint32_t relocSeq[8] = {};    // Header.sequence of each stored event, for logging
+		uint32_t relocWrite = 0;      // events received so far; also the consumer cursor
 		std::string peer;
 		std::string product;
 		uint64_t frameClockHz = 0;

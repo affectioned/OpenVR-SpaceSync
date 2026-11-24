@@ -117,6 +117,7 @@ struct DriftGate
 
 struct RelocHook
 {
+    uint32_t cursor = 0;
     uint32_t lastSeq = 0;
     double lastHmdJumpTime = -1e9;
     int observedCount = 0;
@@ -125,7 +126,8 @@ struct RelocHook
     {
         framelink::RelocalizeEvent ev;
         uint32_t seq = 0;
-        if (L.NextRelocalize(lastSeq, ev, seq)) {
+        if (L.NextRelocalize(cursor, ev, seq)) {
+            lastSeq = seq;
             lastHmdJumpTime = nowSec;
             observedCount++;
             return true;
@@ -287,20 +289,21 @@ int main(int argc, char **argv)
             CHECK(r.lastHmdJumpTime == 12.0);
         }
 
-        // Sequence we've already consumed replays (shouldn't happen, but
-        // verify we don't re-fire). Send an older sequence; NextRelocalize
-        // should reject it since our cursor is at 60.
+        // Frame service restarted: its sequence counter starts over, so a
+        // new event carries a lower sequence than the last one. It must
+        // still be delivered (the cursor counts arrivals, not sequences).
         SendRelocalize(30, 0.0f, 0.0f, 0.0f, port);
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
         t = 13.0;
         {
             int before = r.observedCount;
             bool fired = r.tick(L, t);
-            CHECK(!fired);
-            CHECK(r.observedCount == before);
+            CHECK(fired);
+            CHECK(r.observedCount == before + 1);
+            CHECK(r.lastSeq == 30);
         }
 
-        std::printf("ok: relocalize event -> HMD jump (first, no-repeat, stacked latest-wins, old-seq rejected)\n");
+        std::printf("ok: relocalize event -> HMD jump (first, no-repeat, stacked latest-wins, survives service restart)\n");
     }
 
     // -- Stay Aligned gate uses the same policy with its own trust state ---

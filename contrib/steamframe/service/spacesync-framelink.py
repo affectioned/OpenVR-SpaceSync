@@ -81,6 +81,107 @@ def pack_gravity(seq: int, capture_ticks: int, direction, conf: float) -> bytes:
     )
 
 
+def pack_relocalize(seq: int, capture_ticks: int, translation, rotation) -> bytes:
+    return (
+        _hdr(MSG_RELOCALIZE, seq)
+        + struct.pack("<Q", capture_ticks)
+        + struct.pack("<fff", *translation)
+        + struct.pack("<ffff", *rotation)
+    )
+
+
+# -------- relocalization detection --------------------------------------------
+#
+# Watches the raw HMD pose stream for steps its own velocity can't explain.
+# Only meaningful on a backend that reads TrackingUniverseRawAndUncalibrated:
+# a SteamVR recenter moves the standing universe, not raw poses, so a step
+# there is SLAM moving its origin, never the user recentering.
+#
+# A step is only reported once the next sample continues smoothly from the
+# new pose; a one-sample glitch that snaps back is dropped. Tracking loss
+# resets the detector — what happened during the gap can't be told apart
+# from the user walking, so the PC side relies on the inertial-only flag
+# for that case.
+
+def _q_mul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _q_conj(q):
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+def _q_rotate(q, v):
+    w, x, y, z = _q_mul(_q_mul(q, (0.0, v[0], v[1], v[2])), _q_conj(q))
+    return (x, y, z)
+
+
+def _q_angle(q):
+    return 2.0 * math.acos(min(1.0, abs(q[0])))
+
+
+class RelocDetector:
+    def __init__(self, pos_thresh: float = 0.15, ang_thresh_deg: float = 8.0,
+                 max_dt: float = 0.5, min_conf: float = 0.9):
+        self.pos_thresh = pos_thresh
+        self.ang_thresh = math.radians(ang_thresh_deg)
+        self.max_dt = max_dt
+        self.min_conf = min_conf
+        self.prev = None        # (t, sample) of the last usable sample
+        self.cand = None        # step waiting for the next sample to confirm it
+
+    def reset(self) -> None:
+        self.prev = None
+        self.cand = None
+
+    def _step(self, a, b, dt):
+        """Origin shift (translation, rotation wxyz) taking a's motion-predicted
+        pose onto b, or None if b follows on from a."""
+        lin = [0.5 * (a["lin"][i] + b["lin"][i]) for i in range(3)]
+        ang = [0.5 * (a["ang"][i] + b["ang"][i]) for i in range(3)]
+        pred = tuple(a["pos"][i] + lin[i] * dt for i in range(3))
+        dq = _q_mul(b["quat"], _q_conj(a["quat"]))
+        # Angular velocity's frame (world vs device) differs between runtimes;
+        # its magnitude doesn't, so only use it as an allowance.
+        ang_allow = math.sqrt(sum(w * w for w in ang)) * dt
+        dp = math.sqrt(sum((b["pos"][i] - pred[i]) ** 2 for i in range(3)))
+        if dp < self.pos_thresh and _q_angle(dq) - ang_allow < self.ang_thresh:
+            return None
+        rp = _q_rotate(dq, pred)
+        return tuple(b["pos"][i] - rp[i] for i in range(3)), dq
+
+    def feed(self, t: float, sample):
+        """Feed every polled sample (None or inertial-only included). Returns
+        (capture_ticks, translation, rotation) once a step is confirmed."""
+        usable = (sample is not None and not (sample["flags"] & FLAG_INERTIAL)
+                  and sample["confidence"] >= self.min_conf)
+        if not usable:
+            self.reset()
+            return None
+        if self.prev is None or t - self.prev[0] > self.max_dt:
+            self.prev = (t, sample)
+            self.cand = None
+            return None
+
+        shift = self._step(self.prev[1], sample, t - self.prev[0])
+        out = None
+        if self.cand is not None:
+            if shift is None:
+                out = self.cand
+            self.cand = None
+        elif shift is not None:
+            self.cand = (sample["capture_ticks"], shift[0], shift[1])
+        self.prev = (t, sample)
+        return out
+
+
 # -------- Frame clock ---------------------------------------------------------
 
 # CLOCK_MONOTONIC_RAW in ns. Linux-only. Falls back to perf_counter_ns.
@@ -95,6 +196,9 @@ def now_ticks_ns() -> int:
 
 class Backend(ABC):
     name: str = "base"
+    # True when poll_hmd() reads a space that recenters don't move, which is
+    # what makes RelocDetector's output trustworthy.
+    raw_space: bool = False
 
     @abstractmethod
     def init(self) -> bool:
@@ -154,6 +258,7 @@ def _mat34_to_pos_quat(m):
 
 class OpenVRBackend(Backend):
     name = "openvr"
+    raw_space = True
 
     def init(self) -> bool:
         try:
@@ -459,6 +564,11 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
     pose_sent = 0
     pose_missed = 0
     pose_skipped = 0
+    relocs_sent = 0
+
+    reloc = RelocDetector() if backend.raw_space else None
+    if reloc is None:
+        log.info("relocalization detection off: backend %s doesn't read raw poses", backend.name)
 
     # Motion-gate state: when the HMD stops moving, drop to idle_hz.
     last_sample_tuple = None   # (pos3, quat4) of the last *sent* pose
@@ -480,12 +590,21 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
             # Periodic stats so you can see what's actually flowing without
             # tcpdump. Rate-limited to once every 5s to stay quiet.
             if now - last_stats >= 5.0:
-                log.info("stats: poses sent=%d missed=%d skipped=%d current_rate=%.1fHz",
-                         pose_sent, pose_missed, pose_skipped, 1.0 / period if period else 0.0)
+                log.info("stats: poses sent=%d missed=%d skipped=%d relocs=%d current_rate=%.1fHz",
+                         pose_sent, pose_missed, pose_skipped, relocs_sent, 1.0 / period if period else 0.0)
                 last_stats = now
 
             if now >= next_t:
                 sample = backend.poll_hmd()
+                step = reloc.feed(now, sample) if reloc is not None else None
+                if step is not None:
+                    ticks, trans, rot = step
+                    sock.sendto(pack_relocalize(seq, ticks, trans, rot), addr)
+                    seq += 1
+                    relocs_sent += 1
+                    log.info("relocalization: origin shift %.1f cm / %.1f deg",
+                             100.0 * math.sqrt(sum(c * c for c in trans)),
+                             math.degrees(_q_angle(rot)))
                 if sample is not None:
                     pos = sample["pos"]; quat = sample["quat"]
                     moved = (last_sample_tuple is None or
@@ -547,7 +666,8 @@ def run(host: str, port: int, hz: float, backends: list[str], product: str,
     finally:
         sock.close()
         backend.shutdown()
-        log.info("done — poses sent=%d missed=%d skipped=%d", pose_sent, pose_missed, pose_skipped)
+        log.info("done — poses sent=%d missed=%d skipped=%d relocs=%d",
+                 pose_sent, pose_missed, pose_skipped, relocs_sent)
 
 
 def main() -> None:

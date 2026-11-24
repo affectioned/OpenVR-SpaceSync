@@ -63,4 +63,8 @@ if (Python3_Interpreter_FOUND)
         NAME framelink_wire
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/framelink_wire_test.py"
     )
+    add_test(
+        NAME framelink_reloc
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/framelink_reloc_test.py"
+    )
 endif()

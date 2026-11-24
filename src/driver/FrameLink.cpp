@@ -9,6 +9,7 @@
 #include <ws2tcpip.h>
 #pragma comment(lib, "Ws2_32.lib")
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -211,9 +212,9 @@ namespace framelink
 			relocQueue[slot].pcSeconds = nowSec;
 			relocSeq[slot] = h.sequence;
 			relocWrite++;
-			if (h.sequence > relocLast) relocLast = h.sequence;
-			LOG("FrameLink: relocalize seq=%u dt=%.3f m", h.sequence,
-				(double)(msg.translation[0] * msg.translation[0] + msg.translation[1] * msg.translation[1] + msg.translation[2] * msg.translation[2]));
+			LOG("FrameLink: relocalize seq=%u shift %.3f m", h.sequence,
+				std::sqrt((double)msg.translation[0] * msg.translation[0] + (double)msg.translation[1] * msg.translation[1]
+					+ (double)msg.translation[2] * msg.translation[2]));
 			break;
 		}
 		case MsgClockPong:
@@ -251,24 +252,14 @@ namespace framelink
 		return true;
 	}
 
-	bool Listener::NextRelocalize(uint32_t& lastSeq, RelocalizeEvent& out, uint32_t& outSeq) const
+	bool Listener::NextRelocalize(uint32_t& cursor, RelocalizeEvent& out, uint32_t& outSeq) const
 	{
 		std::lock_guard<std::mutex> lk(mutex);
-		uint32_t bestSeq = lastSeq;
-		int bestSlot = -1;
-		for (int i = 0; i < 8; i++)
-		{
-			if (relocSeq[i] == 0 && relocQueue[i].captureTicks == 0) continue;
-			if (relocSeq[i] > bestSeq)
-			{
-				bestSeq = relocSeq[i];
-				bestSlot = i;
-			}
-		}
-		if (bestSlot < 0) return false;
-		out = relocQueue[bestSlot];
-		outSeq = bestSeq;
-		lastSeq = bestSeq;
+		if (relocWrite == cursor) return false;
+		int slot = (relocWrite - 1) % 8;
+		out = relocQueue[slot];
+		outSeq = relocSeq[slot];
+		cursor = relocWrite;
 		return true;
 	}
 
