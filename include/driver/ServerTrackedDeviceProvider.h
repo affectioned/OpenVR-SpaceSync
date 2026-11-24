@@ -127,7 +127,7 @@ private:
 	// Receives data from a Steam Frame service (issue #18). The driver works
 	// without it — if no packets ever arrive, nothing changes.
 	framelink::Listener frameLink;
-	uint32_t frameLinkRelocSeq = 0;      // highest MsgRelocalize.sequence we've consumed
+	uint32_t frameLinkRelocCursor = 0;   // relocalize arrivals consumed so far
 	int frameLinkTrustState = -1;        // -1=unknown, 0=trusted, 1=low-conf, 2=inertial
 	double frameLinkTrustLogTime = 0.0;
 	int frameLinkStayTrustState = -1;    // same shape as above, but for the Stay Aligned path
@@ -146,6 +146,9 @@ private:
 	std::atomic<double> spaceZeroPoseResetTime{ -1e9 };
 	std::atomic<double> stayLastJumpTime{ -1e9 };
 	std::atomic<int> stayLastJumpDecision{ 0 }; // 1 followed, 2 held, 3 held post-relocalization
+	// Pose thread only.
+	stay::Frame stayLastJumpShift;
+	double frameRelocTime = -1e9;           // last Frame relocalize message, also shadow-only
 
 	stay::Aligner stayAligner;
 	std::atomic<bool> stayWanted{ false };
