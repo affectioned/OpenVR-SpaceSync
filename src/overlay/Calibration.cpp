@@ -1269,13 +1269,18 @@ static void RecordTilt(CalibrationContext &ctx, const protocol::DriverStatus &st
 uint32_t FindBodyTracker()
 {
 	uint32_t chest = vr::k_unTrackedDeviceIndexInvalid;
+	// Null in desktop mode (no SteamVR, or after SteamVR quit) -- the
+	// Calibration tab's Stay Aligned hint calls this every frame.
+	vr::IVRSystem* sys = vr::VRSystem();
+	if (!sys)
+		return chest;
 	char buffer[vr::k_unMaxPropertyStringSize];
 	for (uint32_t id = 0; id < vr::k_unMaxTrackedDeviceCount; ++id)
 	{
-		if (vr::VRSystem()->GetTrackedDeviceClass(id) != vr::TrackedDeviceClass_GenericTracker)
+		if (sys->GetTrackedDeviceClass(id) != vr::TrackedDeviceClass_GenericTracker)
 			continue;
 		vr::ETrackedPropertyError err = vr::TrackedProp_Success;
-		vr::VRSystem()->GetStringTrackedDeviceProperty(id, vr::Prop_ControllerType_String, buffer, vr::k_unMaxPropertyStringSize, &err);
+		sys->GetStringTrackedDeviceProperty(id, vr::Prop_ControllerType_String, buffer, vr::k_unMaxPropertyStringSize, &err);
 		if (err != vr::TrackedProp_Success)
 			continue;
 		std::string type(buffer);
