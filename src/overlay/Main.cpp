@@ -63,10 +63,29 @@ static bool g_ticking = true;
 static bool g_dashboardActive = false;
 
 static void MarkExiting();
+static bool SteamVRProcessRunning();
+
+// Set when SteamVR sends VREvent_Quit, i.e. the VR session is really ending.
+static bool g_steamVrQuitting = false;
 
 static lighthouse::Power ExitPowerMode()
 {
     return CalCtx.dynamicPowerMode == 1 ? lighthouse::Power::Sleep : lighthouse::Power::Standby;
+}
+
+// Only switch base stations off when the VR session is over: SteamVR is
+// quitting, or isn't running at all. Closing (or restarting) SpaceSync mid
+// session used to put them into standby under a running SteamVR. On wake
+// the lighthouse driver came back in a new universe and later re-solved it,
+// moving every tracker ~30 cm / 158 deg in one frame -- a full desync that
+// only a recalibration fixed.
+static bool ShouldPowerDownStationsOnExit()
+{
+#ifdef _WIN32
+    return g_steamVrQuitting || !SteamVRProcessRunning();
+#else
+    return g_steamVrQuitting;
+#endif
 }
 
 static void BeginClose()
@@ -77,7 +96,8 @@ static void BeginClose()
     MarkExiting();
 #endif
     size_t stationCount = lighthouse::Stations().size();
-    if (!g_desktopForced && !g_handoverToVrInstance && CalCtx.basestationManagement && CalCtx.dynamicBasestationPower && stationCount > 0)
+    if (!g_desktopForced && !g_handoverToVrInstance && CalCtx.basestationManagement && CalCtx.dynamicBasestationPower && stationCount > 0
+        && ShouldPowerDownStationsOnExit())
     {
         lighthouse::Note("close requested (X), showing power-down screen");
         g_shutdownScreen = true;
@@ -87,6 +107,8 @@ static void BeginClose()
     }
     else
     {
+        if (CalCtx.basestationManagement && CalCtx.dynamicBasestationPower && stationCount > 0 && !g_desktopForced && !g_handoverToVrInstance)
+            lighthouse::Note("close requested (X), steamvr still running, leaving base stations on");
         lighthouse::Note("close requested (X), shutting down");
         g_ticking = false;
     }
@@ -720,6 +742,7 @@ int main(int argc, char** argv)
             if (sys_event.eventType == vr::VREvent_Quit)
             {
                 lighthouse::Note("steamvr is shutting down");
+                g_steamVrQuitting = true;
                 vr::VRSystem()->AcknowledgeQuit_Exiting();
                 ImGui_ImplOpenVR_Detach();
                 vr::VR_Shutdown();
@@ -821,6 +844,7 @@ int main(int argc, char** argv)
                 case vr::VREvent_Quit:
                 {
                     lighthouse::Note("steamvr is shutting down");
+                    g_steamVrQuitting = true;
                     vr::VRSystem()->AcknowledgeQuit_Exiting();
                     ImGui_ImplOpenVR_Detach();
                     vr::VR_Shutdown();
@@ -887,7 +911,8 @@ int main(int argc, char** argv)
 #ifdef _WIN32
     MarkExiting();
 #endif
-    if (!g_exitStandbyDone && !g_desktopForced && !g_handoverToVrInstance && CalCtx.basestationManagement && CalCtx.dynamicBasestationPower)
+    if (!g_exitStandbyDone && !g_desktopForced && !g_handoverToVrInstance && CalCtx.basestationManagement && CalCtx.dynamicBasestationPower
+        && ShouldPowerDownStationsOnExit())
         lighthouse::PowerDownAllAndWait(ExitPowerMode(), 8000);
     WriteSessionSummary((double)(GetTickCount64() - g_sessionStartTickMs) / 1000.0);
     lighthouse::Note("teardown");
