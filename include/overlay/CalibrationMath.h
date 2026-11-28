@@ -129,6 +129,28 @@ inline Eigen::Matrix3d SolveKabschIRLS(const std::vector<DSample>& deltas,
     return rot;
 }
 
+inline double WrapDeg180(double d)
+{
+    while (d > 180.0) d -= 360.0;
+    while (d <= -180.0) d += 360.0;
+    return d;
+}
+
+// Eigen's eulerAngles(2,1,0) returns the first (Z = roll) angle in [0, 180],
+// so a level rotation with a slightly negative roll comes out on the other
+// branch: roll ~ +180, pitch ~ +-180, yaw mirrored. Rz(a)Ry(b)Rx(c) equals
+// Rz(a+180)Ry(180-b)Rx(c+180), so both triples are the same rotation; pick
+// the one with the smaller tilt so "level" reads as level (otherwise the
+// gravity lock sees a 180 deg pitch and refuses to snap).
+inline Eigen::Vector3d CanonicalizeEulerZYX(const Eigen::Vector3d& eulerDeg)
+{
+    Eigen::Vector3d a(WrapDeg180(eulerDeg[0]), WrapDeg180(eulerDeg[1]), WrapDeg180(eulerDeg[2]));
+    Eigen::Vector3d b(WrapDeg180(a[0] + 180.0), WrapDeg180(180.0 - a[1]), WrapDeg180(a[2] + 180.0));
+    double tiltA = std::fabs(a[0]) + std::fabs(a[2]);
+    double tiltB = std::fabs(b[0]) + std::fabs(b[2]);
+    return tiltB < tiltA ? b : a;
+}
+
 // Snap pitch/roll to zero when both are small, keeping only yaw. Returns
 // the possibly-modified euler triple (ZYX = roll/yaw/pitch, degrees) and
 // sets `appliedOut` true when the snap happened.
@@ -136,8 +158,8 @@ inline Eigen::Vector3d ApplyGravityLock(const Eigen::Vector3d& eulerDeg,
                                         double thresholdDeg,
                                         bool& appliedOut)
 {
-    Eigen::Vector3d out = eulerDeg;
-    double pitch = eulerDeg[2], roll = eulerDeg[0];
+    Eigen::Vector3d out = CanonicalizeEulerZYX(eulerDeg);
+    double pitch = out[2], roll = out[0];
     if (std::fabs(pitch) < thresholdDeg && std::fabs(roll) < thresholdDeg)
     {
         out[0] = 0.0;

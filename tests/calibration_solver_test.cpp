@@ -181,6 +181,25 @@ static void TestGravityLock()
     Eigen::Vector3d outC = calmath::ApplyGravityLock(largeRoll, 3.0, applied);
     CHECK(!applied, "large roll should skip the snap");
     CHECK(outC == largeRoll, "input should pass through unchanged on skip");
+
+    // Case D: Eigen's other euler branch for a nearly level rotation (real
+    // calibration log: roll 179.36, yaw -27.35, pitch -179.74). It is
+    // roll -0.64 / yaw -152.65 / pitch 0.26 and must snap.
+    Eigen::Vector3d flipped(179.36, -27.35, -179.74);
+    auto toMat = [](const Eigen::Vector3d& e) {
+        Eigen::Vector3d r = e * EIGEN_PI / 180.0;
+        return (Eigen::AngleAxisd(r(0), Eigen::Vector3d::UnitZ()) *
+                Eigen::AngleAxisd(r(1), Eigen::Vector3d::UnitY()) *
+                Eigen::AngleAxisd(r(2), Eigen::Vector3d::UnitX())).toRotationMatrix();
+    };
+    Eigen::Vector3d canon = calmath::CanonicalizeEulerZYX(flipped);
+    double same = (toMat(canon) - toMat(flipped)).norm();
+    CHECK(same < 1e-9, "canonical euler must be the same rotation, matrix diff %.3g", same);
+    CHECK(std::fabs(canon[0] + 0.64) < 1e-6 && std::fabs(canon[2] - 0.26) < 1e-6,
+        "canonical tilt should be roll -0.64 / pitch 0.26, got %.4f / %.4f", canon[0], canon[2]);
+    Eigen::Vector3d outD = calmath::ApplyGravityLock(flipped, 3.0, applied);
+    CHECK(applied, "flipped-branch level rotation should snap");
+    CHECK(std::fabs(outD[1] + 152.65) < 1e-6, "yaw should be -152.65, got %.4f", outD[1]);
 }
 
 // --- Test 5: continuous-recal validator ---

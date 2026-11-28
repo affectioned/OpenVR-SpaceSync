@@ -341,7 +341,7 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples, size_t min
 		stats.downWeighted, stats.rejected, deltas.size());
 	CalCtx.Log(buf);
 
-	Eigen::Vector3d euler = rot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI;
+	Eigen::Vector3d euler = calmath::CanonicalizeEulerZYX(rot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI);
 
 	snprintf(buf, sizeof buf, "Calibrated rotation: yaw=%.2f pitch=%.2f roll=%.2f\n", euler[1], euler[2], euler[0]);
 	CalCtx.Log(buf);
@@ -2163,7 +2163,7 @@ void CalibrationTick(double time)
 		if (ctx.noHeadTracker)
 		{
 			calRot = LevelledRotation(ctx, samples, calRot);
-			ctx.calibratedRotation = calRot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI;
+			ctx.calibratedRotation = calmath::CanonicalizeEulerZYX(calRot.eulerAngles(2, 1, 0) * 180.0 / EIGEN_PI);
 			calRot = CalibrationMatrix(ctx);
 		}
 
