@@ -725,6 +725,14 @@ void UserInterface::RenderCalibration(const Status& status)
 			Text(F.semibold, 12.5f, P.textMuted, loc::tr("Continuous recalibration"));
 			VSpace(4.0f);
 
+			// Follow-SLAM mode: the overlay can't measure the offset from the
+			// poses it sees (the driver already moved them), and the driver
+			// keeps this mode aligned itself. See TryContinuousRecal.
+			if (CalCtx.followSlamHmd)
+				row(loc::tr("Status"), loc::tr("Paused, the driver keeps alignment in SLAM follow mode"), P.textStrong);
+		}
+		if (CalCtx.continuousRecal && !CalCtx.followSlamHmd)
+		{
 			std::snprintf(buf, sizeof buf, "%u applied / %u rejected / %u attempted",
 				CalCtx.continuousRecalApplied, CalCtx.continuousRecalRejected, CalCtx.continuousRecalAttempted);
 			unsigned col = CalCtx.continuousRecalRejected > CalCtx.continuousRecalApplied ? P.yellow : P.textStrong;

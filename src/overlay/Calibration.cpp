@@ -291,8 +291,14 @@ DSample DeltaRotationSamples(Sample s1, Sample s2)
 	return ds;
 }
 
-Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
+// minDeltas / enoughData: callers that must not act on a fit from too
+// little rotation (continuous recal) pass a floor; below it the solve is
+// skipped, *enoughData is set false and the result is meaningless. With 0
+// deltas the IRLS still "solves" and returns an arbitrary rotation.
+Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples, size_t minDeltas = 0, bool* enoughData = nullptr)
 {
+	if (enoughData)
+		*enoughData = true;
 	std::vector<DSample> deltas;
 
 	for (size_t i = 0; i < samples.size(); i++)
@@ -310,6 +316,12 @@ Eigen::Vector3d CalibrateRotation(const std::vector<Sample>& samples)
 	char buf[256];
 	snprintf(buf, sizeof buf, "Got %zd samples with %zd delta samples\n", samples.size(), deltas.size());
 	CalCtx.Log(buf);
+	if (deltas.size() < minDeltas)
+	{
+		if (enoughData)
+			*enoughData = false;
+		return Eigen::Vector3d::Zero();
+	}
 
 	std::vector<double> priorWeights(deltas.size());
 	for (size_t i = 0; i < deltas.size(); i++)
@@ -1717,13 +1729,12 @@ static double WrapYawDelta(double degA, double degB)
 	return d;
 }
 
-// Pick a device to pair with the HMD for continuous recalibration samples.
-// In modes where the calibration's original target is still around (head
-// tracker on the headset), that's the right choice. In HMD Driven + No
-// Tracker, the original target was a controller held up during calibration
-// and put away afterwards — fall back to any body tracker from the same
-// tracking system. The rotation/translation we're re-measuring is between
-// the two tracking SPACES, so any pair of co-tracked devices works.
+// Pick the device to pair with the HMD for continuous recalibration samples:
+// only the calibration's own target. The solve is a rigid hand-eye fit -- it
+// assumes the two devices move together (tracker strapped to the headset).
+// A waist/chest tracker or a controller put down after calibration doesn't
+// follow the head, so pairing it with the HMD gives garbage (70+ deg
+// residuals). If the target isn't tracking, skip this window instead.
 static uint32_t PickContRecalTargetID(const CalibrationContext& ctx)
 {
 	if (ctx.targetID < vr::k_unMaxTrackedDeviceCount)
@@ -1731,27 +1742,6 @@ static uint32_t PickContRecalTargetID(const CalibrationContext& ctx)
 		const auto& tp = ctx.devicePoses[ctx.targetID];
 		if (tp.bPoseIsValid && tp.eTrackingResult == vr::TrackingResult_Running_OK)
 			return ctx.targetID;
-	}
-	// Prefer a waist/chest tracker (FindBodyTracker already encodes the
-	// priority), fall back to any GenericTracker from the target tracking
-	// system that is Running_OK.
-	uint32_t body = FindBodyTracker();
-	if (body < vr::k_unMaxTrackedDeviceCount)
-	{
-		const auto& bp = ctx.devicePoses[body];
-		if (bp.bPoseIsValid && bp.eTrackingResult == vr::TrackingResult_Running_OK)
-			return body;
-	}
-	for (uint32_t id = 0; id < vr::k_unMaxTrackedDeviceCount; id++)
-	{
-		if (vr::VRSystem()->GetTrackedDeviceClass(id) != vr::TrackedDeviceClass_GenericTracker)
-			continue;
-		const auto& pp = ctx.devicePoses[id];
-		if (!pp.bPoseIsValid || pp.eTrackingResult != vr::TrackingResult_Running_OK)
-			continue;
-		if (!ctx.targetTrackingSystem.empty() && GetDeviceTrackingSystem(id) != ctx.targetTrackingSystem)
-			continue;
-		return id;
 	}
 	return vr::k_unTrackedDeviceIndexInvalid;
 }
@@ -1777,6 +1767,26 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 		return;
 	}
 	if (!ctx.lastCalibrationOk) return;
+
+	// Follow-SLAM mode: the poses SteamVR reports for the head tracker are
+	// already moved into the headset's SLAM space by the driver (and parked
+	// at y=9001 when "hide head tracker" is on), so a fit on them measures
+	// our own correction, not the real offset -- every window came out as a
+	// 100+ cm "shift" and was rejected. The driver keeps this mode aligned
+	// itself from the raw tracker samples it stores before transforming
+	// (drift / Stay Aligned), so there is nothing for the overlay to do here.
+	static bool loggedFollowSkip = false;
+	if (ctx.followSlamHmd)
+	{
+		g_contRecalBuf.clear();
+		if (!loggedFollowSkip)
+		{
+			CalCtx.Log("Continuous recal paused: the headset follows SLAM tracking, so the driver keeps the alignment itself.\n");
+			loggedFollowSkip = true;
+		}
+		return;
+	}
+	loggedFollowSkip = false;
 
 	uint32_t sourceTargetID = PickContRecalTargetID(ctx);
 	if (sourceTargetID >= vr::k_unMaxTrackedDeviceCount) return;
@@ -1807,7 +1817,17 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 	std::vector<Sample> samples(g_contRecalBuf.begin(), g_contRecalBuf.end());
 
 	perf::Scope<8> _crScope(perf::Global().lastContRecal);
-	Eigen::Vector3d candidateRot = CalibrateRotation(samples);
+	// Sitting still for a whole window leaves too little rotation to fit
+	// (the 0-delta window still proposed a 49 deg shift). Skip quietly --
+	// it isn't a sign the calibration drifted, so don't count it as rejected.
+	constexpr size_t kMinContRecalDeltas = 500;
+	bool enoughData = true;
+	Eigen::Vector3d candidateRot = CalibrateRotation(samples, kMinContRecalDeltas, &enoughData);
+	if (!enoughData)
+	{
+		ctx.continuousRecalAttempted--;
+		return;
+	}
 	Eigen::Matrix3d candidateRotMat = EulerDegToMatrix(candidateRot);
 	Eigen::Vector3d candidateTrans = CalibrateTranslation(samples, candidateRotMat, ctx.calibratedScale);
 
@@ -1844,12 +1864,9 @@ static void TryContinuousRecal(CalibrationContext& ctx, double time)
 	SaveProfile(ctx);
 	ctx.continuousRecalApplied++;
 
-	const char* sourceNote = (sourceTargetID == ctx.targetID)
-	    ? "original calibration target"
-	    : "body tracker fallback (HMD Driven + No Tracker)";
 	snprintf(buf, sizeof buf,
-		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm, via %s (#%u applied, %u rejected, %u attempted)\n",
-		yawDelta, transDeltaM * 100.0, sourceNote,
+		"Continuous recal applied: yaw %+.2f deg, translation %.1f cm (#%u applied, %u rejected, %u attempted)\n",
+		yawDelta, transDeltaM * 100.0,
 		ctx.continuousRecalApplied, ctx.continuousRecalRejected, ctx.continuousRecalAttempted);
 	CalCtx.Log(buf);
 }
